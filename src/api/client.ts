@@ -71,7 +71,37 @@ import {
   VisitorDisplaySettings,
   VisitorProduct,
   ImagesStorageStatus,
-  ImagesMigrationResult
+  ImagesMigrationResult,
+  DeliveryMode,
+  DeliveryZone,
+  DeliveryDriver,
+  DeliveryCourier,
+  DeliverySettingsResponse,
+  DeliverySettingsSaveResponse,
+  DeliveryMasterSaveResponse,
+  DeliveryConfigResponse,
+  DeliveryOrdersListParams,
+  DeliveryOrdersListResponse,
+  DeliveryAssignOrderPayload,
+  DeliveryAssignOrderResponse,
+  DeliveryChangeOrderStatusPayload,
+  DeliveryChangeOrderStatusResponse,
+  DeliveryAssigneeType,
+  DeliverySettlementPreviewResponse,
+  DeliverySettlePayload,
+  DeliverySettleResponse,
+  DeliverySettlementsListParams,
+  DeliverySettlementsListResponse,
+  DeliveryDriverDuesResponse,
+  DeliveryPayoutPreviewParams,
+  DeliveryPayoutPreviewResponse,
+  DeliveryPayoutPayload,
+  DeliveryPayoutResponse,
+  DeliveryMyOrdersResponse,
+  DeliveryDriverUpdateStatusPayload,
+  DeliveryDriverUpdateStatusResponse,
+  DeliveryReportsParams,
+  DeliveryReportsResponse
 } from '../types';
 import type { LabelSettings } from '../utils/labelPrint';
 
@@ -962,6 +992,8 @@ export const api = {
       let fileName =
         operationType === 'sale_price'
           ? 'نموذج-تعديل-سعر-البيع.xlsx'
+          : operationType === 'add_categories'
+          ? 'نموذج-إضافة-تصنيفات.xlsx'
           : 'نموذج-تعديل-سعر-الشراء.xlsx';
 
       const customHeader = res.headers.get('X-Export-Filename');
@@ -2451,6 +2483,308 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({})
     });
+  },
+
+  // Delivery Settings & Master Data
+  async getDeliverySettings(): Promise<DeliverySettingsResponse> {
+    return request<DeliverySettingsResponse>('/api/delivery/settings');
+  },
+
+  async saveDeliverySettings(payload: {
+    enabled?: boolean;
+    mode?: DeliveryMode;
+    zonePricing?: boolean;
+    fixedFee?: number;
+    maxDriverCustody?: number;
+    lateAfterHours?: number;
+  }): Promise<DeliverySettingsSaveResponse> {
+    return request<DeliverySettingsSaveResponse>('/api/delivery/settings', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  async saveDeliveryZone(payload: {
+    id?: string;
+    name: string;
+    customerFee?: number;
+    driverCommission?: number;
+    minOrderValue?: number;
+    active?: boolean;
+  }): Promise<DeliveryMasterSaveResponse<DeliveryZone>> {
+    return request<DeliveryMasterSaveResponse<DeliveryZone>>('/api/delivery/zones', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  async saveDeliveryDriver(payload: {
+    id?: string;
+    name: string;
+    phone?: string;
+    monthlySalary?: number;
+    commissionPerOrder?: number;
+    userId?: string;
+    active?: boolean;
+  }): Promise<DeliveryMasterSaveResponse<DeliveryDriver>> {
+    return request<DeliveryMasterSaveResponse<DeliveryDriver>>('/api/delivery/drivers', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  async saveDeliveryCourier(payload: {
+    id?: string;
+    name: string;
+    feePerOrder?: number;
+    active?: boolean;
+  }): Promise<DeliveryMasterSaveResponse<DeliveryCourier>> {
+    return request<DeliveryMasterSaveResponse<DeliveryCourier>>('/api/delivery/couriers', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  // Delivery Config & Orders
+  async getDeliveryConfig(): Promise<DeliveryConfigResponse> {
+    return request<DeliveryConfigResponse>('/api/delivery/config');
+  },
+
+  async getDeliveryOrders(params: DeliveryOrdersListParams = {}): Promise<DeliveryOrdersListResponse> {
+    const query = new URLSearchParams();
+    if (params.status) query.set('status', params.status);
+    if (params.assigneeType) query.set('assigneeType', params.assigneeType);
+    if (params.assigneeId) query.set('assigneeId', params.assigneeId);
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+    if (params.open) query.set('open', '1');
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    return request<DeliveryOrdersListResponse>(`/api/delivery/orders${qs}`);
+  },
+
+  async assignDeliveryOrder(
+    orderId: string,
+    payload: DeliveryAssignOrderPayload
+  ): Promise<DeliveryAssignOrderResponse> {
+    return request<DeliveryAssignOrderResponse>(
+      `/api/delivery/orders/${encodeURIComponent(orderId)}/assign`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    );
+  },
+
+  async changeDeliveryOrderStatus(
+    orderId: string,
+    payload: DeliveryChangeOrderStatusPayload
+  ): Promise<DeliveryChangeOrderStatusResponse> {
+    return request<DeliveryChangeOrderStatusResponse>(
+      `/api/delivery/orders/${encodeURIComponent(orderId)}/status`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    );
+  },
+
+  // Delivery Settlements & Driver Payouts
+  async getDeliverySettlementPreview(
+    assigneeType: DeliveryAssigneeType,
+    assigneeId: string
+  ): Promise<DeliverySettlementPreviewResponse> {
+    const query = new URLSearchParams({
+      assigneeType,
+      assigneeId
+    });
+    return request<DeliverySettlementPreviewResponse>(
+      `/api/delivery/settlement-preview?${query.toString()}`
+    );
+  },
+
+  async settleDelivery(payload: DeliverySettlePayload): Promise<DeliverySettleResponse> {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return runWithTimeout(undefined, async (signal) => {
+      const res = await fetch('/api/delivery/settle', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal
+      });
+      if (res.status === 401) {
+        let errJson: any = null;
+        try { errJson = await res.json(); } catch (_) {}
+        const isBrowserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+        if (!isBrowserOffline && sessionExpiredHandler) {
+          sessionExpiredHandler();
+        }
+        const err = new Error(errJson?.error || 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا');
+        (err as any).status = 401;
+        (err as any).code = errJson?.code;
+        throw err;
+      }
+      const data: any = await res.json().catch(() => ({}));
+      if (res.status === 423 && data?.code === 'BALANCE_REQUIRED') {
+        emitApiStatus({
+          type: 'BALANCE_REQUIRED',
+          accountId: data?.accountId ? String(data.accountId) : undefined,
+          message: data?.error || 'مطلوب إدخال رصيد الحساب البنكي'
+        });
+        const err = new Error(data?.error || 'مطلوب إدخال رصيد الحساب البنكي');
+        (err as any).status = 423;
+        (err as any).code = 'BALANCE_REQUIRED';
+        throw err;
+      }
+      if (data?.requiresConfirmation === true) {
+        return data as DeliverySettleResponse;
+      }
+      if (!res.ok) {
+        if (data?.code === 'SHEETS_UNAVAILABLE' || data?.code === 'UNKNOWN_RESULT' || res.status === 503 || res.status === 504) {
+          emitApiStatus({
+            type: 'SHEETS_ERROR',
+            code: data?.code === 'UNKNOWN_RESULT' || res.status === 504 ? 'UNKNOWN_RESULT' : 'SHEETS_UNAVAILABLE',
+            message: data?.error || 'تعذر الاتصال بقاعدة البيانات'
+          });
+        }
+        const err = new Error(data?.error || 'تعذر تسجيل التسوية');
+        (err as any).status = res.status;
+        (err as any).code = data?.code;
+        throw err;
+      }
+      emitApiStatus({ type: 'LIVE_DATA' });
+      return data as DeliverySettleResponse;
+    });
+  },
+
+  async getDeliverySettlements(
+    params: DeliverySettlementsListParams = {}
+  ): Promise<DeliverySettlementsListResponse> {
+    const query = new URLSearchParams();
+    if (params.assigneeType) query.set('assigneeType', params.assigneeType);
+    if (params.assigneeId) query.set('assigneeId', params.assigneeId);
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    return request<DeliverySettlementsListResponse>(`/api/delivery/settlements${qs}`);
+  },
+
+  async getDeliveryDriverDues(driverId: string): Promise<DeliveryDriverDuesResponse> {
+    return request<DeliveryDriverDuesResponse>(
+      `/api/delivery/drivers/${encodeURIComponent(driverId)}/dues`
+    );
+  },
+
+  async getDeliveryPayoutPreview(
+    params: DeliveryPayoutPreviewParams
+  ): Promise<DeliveryPayoutPreviewResponse> {
+    const query = new URLSearchParams({
+      driverId: params.driverId,
+      salary: String(params.salary),
+      payCommission: String(params.payCommission),
+      deductShortage: String(params.deductShortage)
+    });
+    return request<DeliveryPayoutPreviewResponse>(
+      `/api/delivery/payout-preview?${query.toString()}`
+    );
+  },
+
+  async createDeliveryDriverPayout(
+    payload: DeliveryPayoutPayload
+  ): Promise<DeliveryPayoutResponse> {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return runWithTimeout(undefined, async (signal) => {
+      const res = await fetch('/api/delivery/payouts', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal
+      });
+      if (res.status === 401) {
+        let errJson: any = null;
+        try { errJson = await res.json(); } catch (_) {}
+        const isBrowserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+        if (!isBrowserOffline && sessionExpiredHandler) {
+          sessionExpiredHandler();
+        }
+        const err = new Error(errJson?.error || 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا');
+        (err as any).status = 401;
+        (err as any).code = errJson?.code;
+        throw err;
+      }
+      const data: any = await res.json().catch(() => ({}));
+      if (res.status === 423 && data?.code === 'BALANCE_REQUIRED') {
+        emitApiStatus({
+          type: 'BALANCE_REQUIRED',
+          accountId: data?.accountId ? String(data.accountId) : undefined,
+          message: data?.error || 'مطلوب إدخال رصيد الحساب البنكي'
+        });
+        const err = new Error(data?.error || 'مطلوب إدخال رصيد الحساب البنكي');
+        (err as any).status = 423;
+        (err as any).code = 'BALANCE_REQUIRED';
+        throw err;
+      }
+      if (data?.requiresConfirmation === true) {
+        return data as DeliveryPayoutResponse;
+      }
+      if (!res.ok) {
+        if (data?.code === 'SHEETS_UNAVAILABLE' || data?.code === 'UNKNOWN_RESULT' || res.status === 503 || res.status === 504) {
+          emitApiStatus({
+            type: 'SHEETS_ERROR',
+            code: data?.code === 'UNKNOWN_RESULT' || res.status === 504 ? 'UNKNOWN_RESULT' : 'SHEETS_UNAVAILABLE',
+            message: data?.error || 'تعذر الاتصال بقاعدة البيانات'
+          });
+        }
+        const err = new Error(data?.error || 'تعذر صرف مستحقات الطيار');
+        (err as any).status = res.status;
+        (err as any).code = data?.code;
+        throw err;
+      }
+      emitApiStatus({ type: 'LIVE_DATA' });
+      return data as DeliveryPayoutResponse;
+    });
+  },
+
+  // Driver "My Orders" (session-scoped on server; never sends driverId/userId)
+  async getDeliveryMyOrders(): Promise<DeliveryMyOrdersResponse> {
+    return request<DeliveryMyOrdersResponse>('/api/delivery/my-orders');
+  },
+
+  async updateDeliveryMyOrderStatus(
+    orderId: string,
+    payload: DeliveryDriverUpdateStatusPayload
+  ): Promise<DeliveryDriverUpdateStatusResponse> {
+    return request<DeliveryDriverUpdateStatusResponse>(
+      `/api/delivery/my-orders/${encodeURIComponent(orderId)}/status`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    );
+  },
+
+  // Delivery Reports
+  async getDeliveryReports(
+    params: DeliveryReportsParams = {}
+  ): Promise<DeliveryReportsResponse> {
+    const query = new URLSearchParams();
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    return request<DeliveryReportsResponse>(`/api/delivery/reports${qs}`);
   }
 };
 

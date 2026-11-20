@@ -1171,7 +1171,12 @@ export type PageType =
   | 'warehouse_excel_transfer'
   | 'warehouse_dispatch_orders'
   | 'visitor'
-  | 'label_print';
+  | 'label_print'
+  | 'delivery_settings'
+  | 'delivery_orders'
+  | 'delivery_settlements'
+  | 'delivery_my_orders'
+  | 'delivery_reports';
 
 export interface BnplReportLine {
   id: string;
@@ -1287,11 +1292,21 @@ export type BulkEditOperationType =
   | 'status'
   | 'image_url'
   | 'add_items'
+  | 'add_categories'
   | 'delete_items';
 
 export type BulkEditPriceOperationType = BulkEditOperationType;
 
 export type BulkEditExcelRowStatus = 'will_update' | 'unchanged' | 'error';
+
+export type BulkEditCategoryRowAction =
+  | 'new_root'
+  | 'new_root_and_sub'
+  | 'reused_root_new_sub'
+  | 'batch_root_new_sub'
+  | 'duplicate_existing'
+  | 'duplicate_in_file'
+  | 'error';
 
 export interface BulkEditExcelPreviewRow {
   rowNumber: number;
@@ -1308,12 +1323,28 @@ export interface BulkEditExcelPreviewRow {
   reason?: string;
   warning?: string;
   rawValues?: Record<string, any>;
+  mainCategoryName?: string;
+  subCategoryName?: string;
+  categoryAction?: BulkEditCategoryRowAction;
 }
 
 export interface BulkEditNewCategoryCount {
   id?: string;
   name: string;
   itemsCount: number;
+}
+
+export interface BulkEditCategoryImportSummary {
+  newRootsCount: number;
+  reusedRootsCount: number;
+  newSubsCount: number;
+  duplicatesCount: number;
+  existingDuplicatesCount: number;
+  intraFileDuplicatesCount: number;
+  errorCount: number;
+  createdRootsCount?: number;
+  createdSubsCount?: number;
+  failedRowsCount?: number;
 }
 
 export interface BulkEditExcelSummary {
@@ -1325,6 +1356,7 @@ export interface BulkEditExcelSummary {
   zeroSalePriceCount?: number;
   zeroSalePriceWarning?: string;
   newCategories?: BulkEditNewCategoryCount[];
+  categorySummary?: BulkEditCategoryImportSummary;
 }
 
 export interface BulkEditExcelPreviewResult {
@@ -1378,6 +1410,7 @@ export type BulkEditExcelUndoResult = BulkEditUndoResult;
 
 export interface BulkEditExcelExecuteResult {
   success: boolean;
+  partialSuccess?: boolean;
   statusCode?: number;
   operationType?: BulkEditOperationType;
   fileName?: string;
@@ -1804,6 +1837,476 @@ export interface ImagesMigrationResult {
   failed: number;
   remaining: number;
   errors: string[];
+}
+
+export type DeliveryMode = 'drivers' | 'couriers' | 'both';
+
+export interface DeliverySettings {
+  enabled: boolean;
+  mode: DeliveryMode;
+  zonePricing: boolean;
+  fixedFee: number;
+  maxDriverCustody: number;
+  lateAfterHours: number;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface DeliveryZone {
+  id: string;
+  name: string;
+  customerFee: number;
+  driverCommission: number;
+  minOrderValue: number;
+  active: boolean;
+  createdAt: string;
+}
+
+export interface DeliveryDriver {
+  id: string;
+  name: string;
+  phone: string;
+  monthlySalary: number;
+  commissionPerOrder: number;
+  active: boolean;
+  userId: string;
+  createdAt: string;
+}
+
+export interface DeliveryCourier {
+  id: string;
+  name: string;
+  feePerOrder: number;
+  active: boolean;
+  createdAt: string;
+}
+
+export interface DeliveryDriverUserOption {
+  id: string;
+  name: string;
+  username: string;
+  isDriver: boolean;
+}
+
+export interface DeliverySettingsResponse {
+  success: boolean;
+  settings: DeliverySettings;
+  zones: DeliveryZone[];
+  drivers: DeliveryDriver[];
+  couriers: DeliveryCourier[];
+  users: DeliveryDriverUserOption[];
+  error?: string;
+}
+
+export interface DeliverySettingsSaveResponse {
+  success: boolean;
+  settings: DeliverySettings;
+  zones: DeliveryZone[];
+  drivers: DeliveryDriver[];
+  couriers: DeliveryCourier[];
+  error?: string;
+}
+
+export interface DeliveryMasterSaveResponse<T> extends DeliverySettingsSaveResponse {
+  saved: T;
+}
+
+export type DeliveryAssigneeType = 'driver' | 'courier';
+export type DeliveryPaymentMode = 'prepaid' | 'cod';
+export type DeliveryOrderStatus =
+  | 'جديد'
+  | 'خرج للتوصيل'
+  | 'اتسلم'
+  | 'ما اتسلمش'
+  | 'رجع المحل'
+  | 'اتلغى';
+
+export interface DeliveryStatusEntry {
+  status: DeliveryOrderStatus;
+  at: string;
+  byId: string;
+  byName: string;
+  note: string;
+}
+
+export interface DeliveryOrder {
+  id: string;
+  number: string;
+  invoiceNumber: string;
+  createdAt: string;
+  createdBy: string;
+  customerId: string;
+  customerName: string;
+  phone: string;
+  address: string;
+  zoneId: string;
+  zoneName: string;
+  zoneCommission: number;
+  fee: number;
+  feeManual: boolean;
+  paymentMode: DeliveryPaymentMode;
+  invoiceTotal: number;
+  amountDue: number;
+  assigneeType: DeliveryAssigneeType | '';
+  assigneeId: string;
+  assigneeName: string;
+  trackingNumber: string;
+  status: DeliveryOrderStatus;
+  failReason: string;
+  log: DeliveryStatusEntry[];
+  outAt: string;
+  deliveredAt: string;
+  closedAt: string;
+  commission: number;
+  courierFee: number;
+  settlementId: string;
+  payoutId: string;
+  returnNumber: string;
+}
+
+export interface DeliveryConfigZoneOption {
+  id: string;
+  name: string;
+  customerFee: number;
+  minOrderValue: number;
+}
+
+export interface DeliveryConfigDriverOption {
+  id: string;
+  name: string;
+  phone: string;
+}
+
+export interface DeliveryConfigCourierOption {
+  id: string;
+  name: string;
+}
+
+export interface DeliveryConfigResponse {
+  success: boolean;
+  settings: {
+    enabled: boolean;
+    mode: DeliveryMode;
+    zonePricing: boolean;
+    fixedFee: number;
+  };
+  canEditFee: boolean;
+  zones: DeliveryConfigZoneOption[];
+  drivers: DeliveryConfigDriverOption[];
+  couriers: DeliveryConfigCourierOption[];
+  error?: string;
+}
+
+export interface CreateInvoiceDeliveryPayload {
+  paymentMode: DeliveryPaymentMode;
+  address: string;
+  phone?: string;
+  zoneId?: string;
+  fee?: number;
+  assigneeType?: DeliveryAssigneeType;
+  assigneeId?: string;
+  trackingNumber?: string;
+}
+
+export interface DeliveryOrdersListParams {
+  status?: DeliveryOrderStatus;
+  assigneeType?: DeliveryAssigneeType;
+  assigneeId?: string;
+  from?: string;
+  to?: string;
+  open?: boolean;
+}
+
+export interface DeliveryOrdersListResponse {
+  success: boolean;
+  orders: DeliveryOrder[];
+  lateAfterHours: number;
+  error?: string;
+}
+
+export interface DeliveryAssignOrderPayload {
+  assigneeType: DeliveryAssigneeType;
+  assigneeId: string;
+  trackingNumber?: string;
+}
+
+export interface DeliveryAssignOrderResponse {
+  success: boolean;
+  order: DeliveryOrder;
+  warning: string;
+  error?: string;
+}
+
+export interface DeliveryChangeOrderStatusPayload {
+  status: DeliveryOrderStatus;
+  reason?: string;
+  note?: string;
+  refund?: 'cash' | 'credit';
+  refundCashboxId?: string;
+  refundDeliveryFee?: boolean;
+}
+
+export interface DeliveryChangeOrderStatusResponse {
+  success: boolean;
+  order: DeliveryOrder;
+  warning: string;
+  returnNumber: string;
+  error?: string;
+}
+
+export interface DeliverySettlement {
+  id: string;
+  number: string;
+  at: string;
+  byId: string;
+  byName: string;
+  assigneeType: DeliveryAssigneeType;
+  assigneeId: string;
+  assigneeName: string;
+  orderIds: string[];
+  invoiceNumbers: string[];
+  collected: number;
+  courierFees: number;
+  expected: number;
+  received: number;
+  shortage: number;
+  cashboxId: string;
+  cashboxName: string;
+  note: string;
+}
+
+export interface DeliverySettlementPreviewResponse {
+  success: boolean;
+  assigneeType: DeliveryAssigneeType;
+  assigneeId: string;
+  assigneeName: string;
+  orders: DeliveryOrder[];
+  collected: number;
+  courierFees: number;
+  expected: number;
+  error?: string;
+}
+
+export interface DeliverySettlePayload {
+  assigneeType: DeliveryAssigneeType;
+  assigneeId: string;
+  orderIds?: string[];
+  receivedAmount: number;
+  cashboxId: string;
+  confirmDifference?: boolean;
+  note?: string;
+  idempotencyKey: string;
+}
+
+export interface DeliverySettleResponse {
+  success: boolean;
+  duplicate?: boolean;
+  requiresConfirmation?: boolean;
+  expected?: number;
+  received?: number;
+  shortage?: number;
+  settlement?: DeliverySettlement;
+  message?: string;
+  code?: string;
+  error?: string;
+}
+
+export interface DeliverySettlementsListParams {
+  assigneeType?: DeliveryAssigneeType;
+  assigneeId?: string;
+  from?: string;
+  to?: string;
+}
+
+export interface DeliverySettlementsListResponse {
+  success: boolean;
+  settlements: DeliverySettlement[];
+  error?: string;
+}
+
+export interface DeliveryDriverDues {
+  driverId: string;
+  driverName: string;
+  monthlySalary: number;
+  commissionUnpaid: number;
+  unpaidOrderIds: string[];
+  shortageOutstanding: number;
+  custody: number;
+}
+
+export interface DeliveryDriverPayout {
+  id: string;
+  number: string;
+  at: string;
+  byId: string;
+  byName: string;
+  driverId: string;
+  driverName: string;
+  salary: number;
+  commission: number;
+  shortageDeducted: number;
+  paid: number;
+  orderIds: string[];
+  cashboxId: string;
+  cashboxName: string;
+  note: string;
+}
+
+export interface DeliveryDriverDuesResponse {
+  success: boolean;
+  dues: DeliveryDriverDues;
+  payouts: DeliveryDriverPayout[];
+  error?: string;
+}
+
+export interface DeliveryPayoutPreview {
+  driverId: string;
+  driverName: string;
+  salary: number;
+  payCommission: boolean;
+  deductShortage: boolean;
+  commission: number;
+  orderIds: string[];
+  gross: number;
+  shortageOutstanding: number;
+  shortageDeducted: number;
+  paid: number;
+  canPayout: boolean;
+}
+
+export interface DeliveryPayoutPreviewParams {
+  driverId: string;
+  salary: number;
+  payCommission: boolean;
+  deductShortage: boolean;
+}
+
+export interface DeliveryPayoutPreviewResponse {
+  success: boolean;
+  preview: DeliveryPayoutPreview;
+  dues: DeliveryDriverDues;
+  error?: string;
+}
+
+export interface DeliveryPayoutExpectedPreview {
+  salary: number;
+  commission: number;
+  shortageDeducted: number;
+  paid: number;
+  orderIds: string[];
+}
+
+export interface DeliveryPayoutPayload {
+  driverId: string;
+  salary: number;
+  payCommission: boolean;
+  deductShortage: boolean;
+  cashboxId: string;
+  note?: string;
+  idempotencyKey: string;
+  expectedPreview?: DeliveryPayoutExpectedPreview;
+}
+
+export interface DeliveryPayoutResponse {
+  success: boolean;
+  duplicate?: boolean;
+  requiresConfirmation?: boolean;
+  code?: string;
+  payout?: DeliveryDriverPayout;
+  preview?: DeliveryPayoutPreview;
+  dues?: DeliveryDriverDues;
+  message?: string;
+  error?: string;
+}
+
+export type DeliveryDriverAllowedStatus = 'خرج للتوصيل' | 'اتسلم' | 'ما اتسلمش';
+
+export interface DeliveryMyOrdersResponse {
+  success: boolean;
+  driver: DeliveryDriver;
+  open: DeliveryOrder[];
+  recent: DeliveryOrder[];
+  custody: number;
+  error?: string;
+  code?: string;
+}
+
+export interface DeliveryDriverUpdateStatusPayload {
+  status: DeliveryDriverAllowedStatus;
+  reason?: string;
+  note?: string;
+}
+
+export interface DeliveryDriverUpdateStatusResponse {
+  success: boolean;
+  order: DeliveryOrder;
+  warning: string;
+  returnNumber: string;
+  error?: string;
+  code?: string;
+}
+
+export interface DeliveryReportsParams {
+  from?: string;
+  to?: string;
+}
+
+export interface DeliveryReportCustodyRow {
+  type: DeliveryAssigneeType;
+  id: string;
+  name: string;
+  amount: number;
+  orders: number;
+  since: string;
+}
+
+export interface DeliveryReportPerformanceRow {
+  driverId: string;
+  driverName: string;
+  orders: number;
+  delivered: number;
+  failed: number;
+  deliveredPercent: number;
+  avgMinutes: number;
+}
+
+export interface DeliveryReportFeeGroupRow {
+  name: string;
+  total: number;
+  orders: number;
+}
+
+export interface DeliveryReportDuesRow extends DeliveryDriverDues {
+  paidInPeriod: number;
+}
+
+export interface DeliveryReportsResponse {
+  success: boolean;
+  from: string;
+  to: string;
+  openOrders: {
+    total: number;
+    late: number;
+    lateAfterHours: number;
+    byStatus: Record<string, number>;
+    lateOrders: DeliveryOrder[];
+  };
+  custody: DeliveryReportCustodyRow[];
+  performance: DeliveryReportPerformanceRow[];
+  fees: {
+    total: number;
+    byZone: DeliveryReportFeeGroupRow[];
+    byAssignee: DeliveryReportFeeGroupRow[];
+  };
+  settlements: {
+    count: number;
+    expected: number;
+    received: number;
+    shortage: number;
+    list: DeliverySettlement[];
+  };
+  dues: DeliveryReportDuesRow[];
+  error?: string;
 }
 
 

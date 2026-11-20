@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Item, Platform, ItemPlatformCost, Invoice, UserRole, TaxSettings, Customer, Cashbox, ProductCategory, InvoicePrintSettings, CompanySettings, DisplaySettings, SalesRules, DefaultSelectionMode, DefaultCustomerSelectionMode } from '../types';
+import { Item, Platform, ItemPlatformCost, Invoice, UserRole, TaxSettings, Customer, Cashbox, ProductCategory, InvoicePrintSettings, CompanySettings, DisplaySettings, SalesRules, DefaultSelectionMode, DefaultCustomerSelectionMode, DeliveryConfigResponse, DeliveryPaymentMode, DeliveryAssigneeType, CreateInvoiceDeliveryPayload } from '../types';
 import { api } from '../api/client';
 import { FormulaVerifierModal } from '../components/FormulaVerifierModal';
 import { CameraBarcodeScannerModal } from '../components/CameraBarcodeScannerModal';
@@ -161,6 +161,16 @@ interface PosInvoiceDraft {
   isCommissionPercentOverridden: boolean;
   idempotencyKey: string;
   cart: CartItem[];
+  isDeliveryEnabled?: boolean;
+  deliveryPaymentMode?: DeliveryPaymentMode;
+  deliveryZoneId?: string;
+  deliveryAddress?: string;
+  deliveryPhone?: string;
+  deliveryOrderFeeInput?: number | '';
+  deliveryFeeManual?: boolean;
+  deliveryAssigneeType?: '' | DeliveryAssigneeType;
+  deliveryAssigneeId?: string;
+  deliveryTrackingNumber?: string;
 }
 
 function getPosUserKey(user?: UserAccount | null): string {
@@ -755,6 +765,135 @@ export const POSPage: React.FC<POSPageProps> = ({
   const [platformOrderId, setPlatformOrderId] = useState<string>('');
   const [platformOrderError, setPlatformOrderError] = useState<boolean>(false);
 
+  // إعدادات وحالة التوصيل (للبيع المباشر فقط وعند تفعيل التوصيل من إعدادات التوصيل)
+  const [deliveryConfig, setDeliveryConfig] = useState<DeliveryConfigResponse | null>(null);
+  const [isDeliveryEnabled, setIsDeliveryEnabled] = useState<boolean>(false);
+  const [deliveryPaymentMode, setDeliveryPaymentMode] = useState<DeliveryPaymentMode>('prepaid');
+  const [deliveryZoneId, setDeliveryZoneId] = useState<string>('');
+  const [deliveryAddress, setDeliveryAddress] = useState<string>('');
+  const [deliveryPhone, setDeliveryPhone] = useState<string>('');
+  const [deliveryOrderFeeInput, setDeliveryOrderFeeInput] = useState<number | ''>(0);
+  const [deliveryFeeManual, setDeliveryFeeManual] = useState<boolean>(false);
+  const [deliveryZoneWarning, setDeliveryZoneWarning] = useState<string | null>(null);
+  const [deliveryAssigneeType, setDeliveryAssigneeType] = useState<'' | DeliveryAssigneeType>('');
+  const [deliveryAssigneeId, setDeliveryAssigneeId] = useState<string>('');
+  const [deliveryTrackingNumber, setDeliveryTrackingNumber] = useState<string>('');
+  const [deliveryAddressError, setDeliveryAddressError] = useState<boolean>(false);
+  const [deliveryZoneError, setDeliveryZoneError] = useState<boolean>(false);
+
+  const isDeliveryFeatureEnabled = !isOffline && Boolean(deliveryConfig?.settings?.enabled);
+  const isDeliveryOrderActive = saleMode === 'customer' && isDeliveryFeatureEnabled && isDeliveryEnabled;
+  const isCodDelivery = isDeliveryOrderActive && deliveryPaymentMode === 'cod';
+  const canEditDeliveryFee =
+    !isOffline &&
+    Boolean(deliveryConfig?.canEditFee) &&
+    (isDesigner || hasPermission(user, 'delivery.edit_fee'));
+
+  const selectedDeliveryZone = useMemo(() => {
+    if (!deliveryConfig?.zones || !deliveryZoneId) return null;
+    return deliveryConfig.zones.find(z => z.id === deliveryZoneId) || null;
+  }, [deliveryConfig?.zones, deliveryZoneId]);
+
+  const computedDeliveryFee = useMemo(() => {
+    if (!deliveryConfig?.settings?.enabled) return 0;
+    if (deliveryConfig.settings.zonePricing) {
+      return selectedDeliveryZone ? Math.max(0, Number(selectedDeliveryZone.customerFee || 0)) : 0;
+    }
+    return Math.max(0, Number(deliveryConfig.settings.fixedFee || 0));
+  }, [deliveryConfig, selectedDeliveryZone]);
+
+  const effectiveDeliveryOrderFee = useMemo(() => {
+    if (!isDeliveryOrderActive) return 0;
+    if (canEditDeliveryFee && deliveryFeeManual) {
+      if (deliveryOrderFeeInput === '') return 0;
+      const n = Number(deliveryOrderFeeInput);
+      return isNaN(n) || n < 0 ? 0 : Math.round(n * 100) / 100;
+    }
+    return Math.round(computedDeliveryFee * 100) / 100;
+  }, [isDeliveryOrderActive, canEditDeliveryFee, deliveryFeeManual, deliveryOrderFeeInput, computedDeliveryFee]);
+
+  // مزامنة خانة رسوم التوصيل مع الرسوم المحسوبة من السيرفر ما لم يعدّلها مستخدم يملك الصلاحية
+  useEffect(() => {
+    if (!canEditDeliveryFee || !deliveryFeeManual) {
+      setDeliveryOrderFeeInput(Math.round(computedDeliveryFee * 100) / 100);
+    }
+  }, [computedDeliveryFee, canEditDeliveryFee, deliveryFeeManual]);
+
+  // عند انقطاع الاتصال أو إيقاف التوصيل من الإعدادات: إغلاق خيار التوصيل للفاتورة المفتوحة
+  useEffect(() => {
+    if (isOffline && isDeliveryEnabled) {
+      setIsDeliveryEnabled(false);
+    }
+  }, [isOffline, isDeliveryEnabled]);
+
+  const syncDeliveryFromCustomer = React.useCallback(
+    (cust: Customer | null, cfg: DeliveryConfigResponse | null) => {
+      setDeliveryAddress(cust?.address || '');
+      setDeliveryPhone(cust?.phone || '');
+      setDeliveryAddressError(false);
+      setDeliveryZoneError(false);
+      setDeliveryFeeManual(false);
+
+      if (!cfg?.settings?.zonePricing) {
+        setDeliveryZoneId('');
+        setDeliveryZoneWarning(null);
+        return;
+      }
+
+      if (cust?.zoneId) {
+        const activeZone = (cfg.zones || []).find(z => z.id === cust.zoneId);
+        if (activeZone) {
+          setDeliveryZoneId(activeZone.id);
+          setDeliveryZoneWarning(null);
+        } else {
+          setDeliveryZoneId('');
+          setDeliveryZoneWarning('منطقة التوصيل المسجلة للعميل غير نشطة أو غير متاحة حاليًا — يرجى اختيار منطقة نشطة');
+        }
+      } else if (cust) {
+        setDeliveryZoneId('');
+        setDeliveryZoneWarning('لا توجد منطقة توصيل مسجلة لهذا العميل — اختر المنطقة لحساب الرسوم');
+      } else {
+        setDeliveryZoneId('');
+        setDeliveryZoneWarning(null);
+      }
+    },
+    []
+  );
+
+  const resetDeliveryOrderState = React.useCallback(() => {
+    setIsDeliveryEnabled(false);
+    setDeliveryPaymentMode('prepaid');
+    setDeliveryZoneId('');
+    setDeliveryAddress('');
+    setDeliveryPhone('');
+    setDeliveryFeeManual(false);
+    setDeliveryZoneWarning(null);
+    setDeliveryAssigneeType('');
+    setDeliveryAssigneeId('');
+    setDeliveryTrackingNumber('');
+    setDeliveryAddressError(false);
+    setDeliveryZoneError(false);
+  }, []);
+
+  const handleToggleDeliveryEnabled = (nextEnabled: boolean) => {
+    setErrorMsg(null);
+    setDeliveryAddressError(false);
+    setDeliveryZoneError(false);
+    if (!nextEnabled) {
+      setIsDeliveryEnabled(false);
+      return;
+    }
+    if (saleMode !== 'customer' || !isDeliveryFeatureEnabled) return;
+    setIsDeliveryEnabled(true);
+    const currentCust = selectedCustomerId ? customers.find(c => c.id === selectedCustomerId) || null : null;
+    if (currentCust) {
+      syncDeliveryFromCustomer(currentCust, deliveryConfig);
+    } else {
+      setDeliveryZoneWarning(null);
+      setDeliveryFeeManual(false);
+    }
+  };
+
   useEffect(() => {
     if (saleMode === 'platform' && salesRules.platformAlwaysCredit) {
       setPaymentType('آجل');
@@ -769,6 +908,9 @@ export const POSPage: React.FC<POSPageProps> = ({
     setSelectedCustomerId(newCust.id);
     setCustomerFieldError(false);
     setErrorMsg(null);
+    if (isDeliveryEnabled && saleMode === 'customer') {
+      syncDeliveryFromCustomer(newCust, deliveryConfig);
+    }
   };
 
   const handleClearCart = () => {
@@ -777,6 +919,7 @@ export const POSPage: React.FC<POSPageProps> = ({
     setNotes('');
     setPlatformOrderId('');
     setPlatformOrderError(false);
+    resetDeliveryOrderState();
     setIsManualCashOverride(false);
     setPaidAmountInput('0.00');
     if (saleMode === 'platform' && salesRules.platformAlwaysCredit) {
@@ -845,6 +988,9 @@ export const POSPage: React.FC<POSPageProps> = ({
     if (targetMode !== 'platform') {
       setPlatformOrderId('');
       setPlatformOrderError(false);
+    }
+    if (targetMode !== 'customer') {
+      resetDeliveryOrderState();
     }
     if (targetMode === 'platform' && salesRules.platformAlwaysCredit) {
       setPaymentType('آجل');
@@ -1310,8 +1456,9 @@ export const POSPage: React.FC<POSPageProps> = ({
       api.getCashboxes().catch(() => ({ success: false, cashboxes: [] })),
       api.getCustomers().catch(() => ({ success: false, customers: [] })),
       api.getUserCashboxAssignments().catch(() => ({ success: false, assignments: [] })),
-      api.getSalesRules().catch(() => ({ success: false, rules: undefined }))
-    ]).then(([cbRes, custRes, asRes, rulesRes]) => {
+      api.getSalesRules().catch(() => ({ success: false, rules: undefined })),
+      api.getDeliveryConfig().catch(() => null)
+    ]).then(([cbRes, custRes, asRes, rulesRes, delivCfg]) => {
       if (cbRes.success && cbRes.cashboxes && cbRes.cashboxes.length > 0) {
         setCashboxes(cbRes.cashboxes);
         applyDefaultCashbox(cbRes.cashboxes, asRes.assignments);
@@ -1323,6 +1470,11 @@ export const POSPage: React.FC<POSPageProps> = ({
         : customers;
       if (custRes.success && custRes.customers && custRes.customers.length > 0) {
         setCustomers(custRes.customers);
+      }
+      if (delivCfg && delivCfg.success) {
+        setDeliveryConfig(delivCfg);
+      } else {
+        setDeliveryConfig(null);
       }
       if (rulesRes.success && rulesRes.rules) {
         setSalesRules(rulesRes.rules);
@@ -1433,6 +1585,27 @@ export const POSPage: React.FC<POSPageProps> = ({
       setNotes(draft.notes || '');
       setPlatformOrderId(restoredMode === 'platform' ? (draft.platformOrderId || '') : '');
       setPlatformOrderError(false);
+      if (restoredMode === 'customer' && draft.isDeliveryEnabled) {
+        setIsDeliveryEnabled(true);
+        setDeliveryPaymentMode(draft.deliveryPaymentMode === 'cod' ? 'cod' : 'prepaid');
+        setDeliveryZoneId(draft.deliveryZoneId || '');
+        setDeliveryAddress(draft.deliveryAddress || '');
+        setDeliveryPhone(draft.deliveryPhone || '');
+        setDeliveryOrderFeeInput(draft.deliveryOrderFeeInput ?? 0);
+        setDeliveryFeeManual(Boolean(draft.deliveryFeeManual));
+        setDeliveryAssigneeType(
+          draft.deliveryAssigneeType === 'driver' || draft.deliveryAssigneeType === 'courier'
+            ? draft.deliveryAssigneeType
+            : ''
+        );
+        setDeliveryAssigneeId(draft.deliveryAssigneeId || '');
+        setDeliveryTrackingNumber(draft.deliveryTrackingNumber || '');
+        setDeliveryZoneWarning(null);
+        setDeliveryAddressError(false);
+        setDeliveryZoneError(false);
+      } else {
+        resetDeliveryOrderState();
+      }
       setIsManualCashOverride(Boolean(draft.isManualCashOverride));
       setPaidAmountInput(draft.paidAmountInput ?? '0.00');
       setPosBnplEnabled(Boolean(draft.posBnplEnabled));
@@ -1822,7 +1995,9 @@ export const POSPage: React.FC<POSPageProps> = ({
   };
 
   // مجاميع الفاتورة والضرائب باستخدام الدالة المشتركة calculateInvoice من src/shared/invoiceCalc.ts
-  const deliveryFeeNumber = isDeliveryFeeEnabled ? (Number(deliveryFee) || 0) : 0;
+  const deliveryFeeNumber = isDeliveryOrderActive
+    ? effectiveDeliveryOrderFee
+    : (isDeliveryFeeEnabled ? (Number(deliveryFee) || 0) : 0);
   const invoiceSummaryCalc = useMemo(() => {
     const isPlatformMode = saleMode === 'platform';
     const rawComm = isPlatformMode
@@ -1881,6 +2056,7 @@ export const POSPage: React.FC<POSPageProps> = ({
 
   // حساب المقبوض والمتبقي بناءً على نوع السداد المختار
   const effectivePaidAmount = useMemo(() => {
+    if (isCodDelivery) return 0;
     if (paymentType === 'آجل') return 0;
     if (paymentType === 'نقدي') {
       if (!canEditCashPaid) return netAmount;
@@ -1893,9 +2069,12 @@ export const POSPage: React.FC<POSPageProps> = ({
     const val = parseFloat(paidAmountInput);
     if (isNaN(val) || val <= 0) return 0;
     return Math.min(val, netAmount);
-  }, [paymentType, paidAmountInput, netAmount, canEditCashPaid, autoFillCashPaid]);
+  }, [isCodDelivery, paymentType, paidAmountInput, netAmount, canEditCashPaid, autoFillCashPaid]);
 
   const effectiveRemainingAmount = useMemo(() => {
+    if (isCodDelivery) {
+      return netAmount;
+    }
     if (paymentType === 'آجل') {
       return creditPartyType === 'customer'
         ? Math.round((totalBeforeDiscount + deliveryFeeNumber) * 100) / 100
@@ -1905,7 +2084,7 @@ export const POSPage: React.FC<POSPageProps> = ({
       return 0;
     }
     return Math.max(0, netAmount - effectivePaidAmount);
-  }, [paymentType, creditPartyType, totalBeforeDiscount, deliveryFeeNumber, netAmount, effectivePaidAmount]);
+  }, [isCodDelivery, paymentType, creditPartyType, totalBeforeDiscount, deliveryFeeNumber, netAmount, effectivePaidAmount]);
 
   // تعبئة المدفوع النقدي تلقائيًا بالمطلوب وتحديثه ديناميكيًا مع تغييرات السلة
   useEffect(() => {
@@ -1994,7 +2173,21 @@ export const POSPage: React.FC<POSPageProps> = ({
       posCommissionPercentInput,
       isCommissionPercentOverridden,
       idempotencyKey: idempotencyKeyRef.current,
-      cart
+      cart,
+      ...(saleMode === 'customer' && isDeliveryEnabled
+        ? {
+            isDeliveryEnabled: true,
+            deliveryPaymentMode,
+            deliveryZoneId,
+            deliveryAddress,
+            deliveryPhone,
+            deliveryOrderFeeInput,
+            deliveryFeeManual,
+            deliveryAssigneeType,
+            deliveryAssigneeId,
+            deliveryTrackingNumber
+          }
+        : {})
     });
   }, [
     isDraftReady,
@@ -2018,7 +2211,17 @@ export const POSPage: React.FC<POSPageProps> = ({
     posBnplPercentInput,
     isBnplPercentOverridden,
     posCommissionPercentInput,
-    isCommissionPercentOverridden
+    isCommissionPercentOverridden,
+    isDeliveryEnabled,
+    deliveryPaymentMode,
+    deliveryZoneId,
+    deliveryAddress,
+    deliveryPhone,
+    deliveryOrderFeeInput,
+    deliveryFeeManual,
+    deliveryAssigneeType,
+    deliveryAssigneeId,
+    deliveryTrackingNumber
   ]);
 
   // تسجيل تغييرات الفاتورة المفتوحة في سجل الأصناف غير المباعة (في الخلفية بصمت)
@@ -2062,6 +2265,8 @@ export const POSPage: React.FC<POSPageProps> = ({
     setPlatformFieldError(false);
     setCustomerFieldError(false);
     setPlatformOrderError(false);
+    setDeliveryAddressError(false);
+    setDeliveryZoneError(false);
     setPriceViolatingItemIds(new Set());
 
     if (cart.length === 0) {
@@ -2071,6 +2276,14 @@ export const POSPage: React.FC<POSPageProps> = ({
 
     const isPlatformSale = saleMode === 'platform';
     const effectiveCreditPartyType: 'customer' | 'platform' = isPlatformSale ? 'platform' : 'customer';
+
+    if (!isPlatformSale && isDeliveryEnabled && isOffline) {
+      setErrorMsg('إنشاء فاتورة توصيل متاح عند رجوع الاتصال فقط');
+      return;
+    }
+
+    const activeDeliveryOrder = !isPlatformSale && isDeliveryOrderActive;
+    const activeCodDelivery = activeDeliveryOrder && deliveryPaymentMode === 'cod';
 
     if (
       isPlatformSale &&
@@ -2093,6 +2306,39 @@ export const POSPage: React.FC<POSPageProps> = ({
       setCustomerFieldError(true);
       setErrorMsg('اختر العميل أولًا');
       return;
+    }
+
+    // 1.5 فحص بيانات التوصيل الإلزامية قبل الإرسال (مع بقاء السيرفر المرجع النهائي)
+    if (activeDeliveryOrder) {
+      if (deliveryConfig?.settings.zonePricing && !selectedDeliveryZone) {
+        setDeliveryZoneError(true);
+        setErrorMsg('اختار منطقة التوصيل');
+        return;
+      }
+      if (!deliveryAddress.trim()) {
+        setDeliveryAddressError(true);
+        setErrorMsg('اكتب عنوان التوصيل');
+        return;
+      }
+      if (
+        deliveryConfig?.settings.zonePricing &&
+        selectedDeliveryZone &&
+        selectedDeliveryZone.minOrderValue > 0 &&
+        totalBeforeDiscount + 0.001 < selectedDeliveryZone.minOrderValue
+      ) {
+        setErrorMsg(
+          `أقل قيمة طلب لمنطقة «${selectedDeliveryZone.name}» هي ${selectedDeliveryZone.minOrderValue} ج.م (الطلب ${totalBeforeDiscount.toFixed(2)} ج.م)`
+        );
+        return;
+      }
+      if (deliveryAssigneeType && !deliveryAssigneeId) {
+        setErrorMsg(
+          deliveryAssigneeType === 'driver'
+            ? 'اختر الطيار أو اترك التعيين بدون تحديد'
+            : 'اختر شركة الشحن أو اترك التعيين بدون تحديد'
+        );
+        return;
+      }
     }
 
     // 2. فحص قواعد السعر (السعر صفر / أقل من الشراء) لمن لا يملك صلاحية prices.override_min_price
@@ -2143,32 +2389,34 @@ export const POSPage: React.FC<POSPageProps> = ({
       }
     }
 
-    if (paymentType === 'آجل') {
-      if (!isPlatformSale && !selectedCustomerId) {
-        setCustomerFieldError(true);
-        setErrorMsg('يجب اختيار العميل لإصدار فاتورة آجلة على عميل');
+    if (!activeCodDelivery) {
+      if (paymentType === 'آجل') {
+        if (!isPlatformSale && !selectedCustomerId) {
+          setCustomerFieldError(true);
+          setErrorMsg('يجب اختيار العميل لإصدار فاتورة آجلة على عميل');
+          return;
+        }
+        if (isPlatformSale && !selectedPlatform?.id) {
+          setPlatformFieldError(true);
+          setErrorMsg('يجب اختيار المنصة لإصدار فاتورة آجلة على منصة');
+          return;
+        }
+      } else if (paymentType === 'جزئي' && (isPlatformSale || !selectedCustomerId)) {
+        if (!isPlatformSale && !selectedCustomerId) {
+          setCustomerFieldError(true);
+        }
+        setErrorMsg(
+          isPlatformSale
+            ? 'البيع الجزئي متاح في وضع بيع لعميل فقط'
+            : 'يجب اختيار العميل لتسجيل المديونية المستحقة على حسابه في الفاتورة الجزئية'
+        );
         return;
       }
-      if (isPlatformSale && !selectedPlatform?.id) {
-        setPlatformFieldError(true);
-        setErrorMsg('يجب اختيار المنصة لإصدار فاتورة آجلة على منصة');
-        return;
-      }
-    } else if (paymentType === 'جزئي' && (isPlatformSale || !selectedCustomerId)) {
-      if (!isPlatformSale && !selectedCustomerId) {
-        setCustomerFieldError(true);
-      }
-      setErrorMsg(
-        isPlatformSale
-          ? 'البيع الجزئي متاح في وضع بيع لعميل فقط'
-          : 'يجب اختيار العميل لتسجيل المديونية المستحقة على حسابه في الفاتورة الجزئية'
-      );
-      return;
-    }
 
-    if ((paymentType === 'نقدي' || (paymentType === 'جزئي' && effectivePaidAmount > 0)) && !selectedCashboxId) {
-      setErrorMsg('يجب اختيار خزينة التحصيل لإيداع المبلغ المقبوض نقدًا');
-      return;
+      if ((paymentType === 'نقدي' || (paymentType === 'جزئي' && effectivePaidAmount > 0)) && !selectedCashboxId) {
+        setErrorMsg('يجب اختيار خزينة التحصيل لإيداع المبلغ المقبوض نقدًا');
+        return;
+      }
     }
 
     isSubmittingRef.current = true;
@@ -2186,6 +2434,34 @@ export const POSPage: React.FC<POSPageProps> = ({
             : Number(selectedPlatform?.discountPercentage || 0))
         : 0;
 
+      const deliveryPayload: CreateInvoiceDeliveryPayload | undefined = activeDeliveryOrder
+        ? {
+            paymentMode: deliveryPaymentMode,
+            address: deliveryAddress.trim(),
+            ...(deliveryPhone.trim() ? { phone: deliveryPhone.trim() } : {}),
+            ...(deliveryConfig?.settings.zonePricing && selectedDeliveryZone
+              ? { zoneId: selectedDeliveryZone.id }
+              : {}),
+            ...(canEditDeliveryFee && deliveryFeeManual ? { fee: effectiveDeliveryOrderFee } : {}),
+            ...(deliveryAssigneeType && deliveryAssigneeId
+              ? {
+                  assigneeType: deliveryAssigneeType,
+                  assigneeId: deliveryAssigneeId,
+                  ...(deliveryAssigneeType === 'courier' && deliveryTrackingNumber.trim()
+                    ? { trackingNumber: deliveryTrackingNumber.trim() }
+                    : {})
+                }
+              : {})
+          }
+        : undefined;
+
+      const resolvedPaymentType: 'نقدي' | 'آجل' | 'جزئي' = activeCodDelivery ? 'آجل' : paymentType;
+      const resolvedCreditPartyType: 'customer' | 'platform' | 'delivery' | undefined = activeCodDelivery
+        ? 'delivery'
+        : paymentType === 'آجل'
+        ? effectiveCreditPartyType
+        : undefined;
+
       const invoicePayload = {
         requestId,
         idempotencyKey,
@@ -2199,22 +2475,41 @@ export const POSPage: React.FC<POSPageProps> = ({
         bnplEnabled: isPlatformSale ? posBnplEnabled : false,
         bnplPercentOverride: isPlatformSale && isBnplPercentOverridden && posBnplPercentInput !== '' ? Number(posBnplPercentInput) : undefined,
         commissionPercentOverride: isPlatformSale && isCommissionPercentOverridden && posCommissionPercentInput !== '' ? Number(posCommissionPercentInput) : undefined,
-        paymentType,
-        creditPartyType: paymentType === 'آجل' ? effectiveCreditPartyType : undefined,
-        creditPartyId: paymentType === 'آجل'
+        paymentType: resolvedPaymentType,
+        creditPartyType: resolvedCreditPartyType,
+        creditPartyId: activeCodDelivery
+          ? undefined
+          : paymentType === 'آجل'
           ? (isPlatformSale ? selectedPlatform?.id : selectedCustomerId)
           : undefined,
-        creditDueAmount: paymentType === 'آجل' ? effectiveRemainingAmount : undefined,
-        paidAmount: effectivePaidAmount,
-        remainingAmount: effectiveRemainingAmount,
-        paymentStatus: paymentType === 'آجل' ? 'آجل' : (effectiveRemainingAmount === 0 ? 'مدفوع بالكامل' : (effectivePaidAmount > 0 ? 'مدفوع جزئياً' : 'آجل')),
-        cashboxId: (paymentType === 'نقدي' || (paymentType === 'جزئي' && effectivePaidAmount > 0)) ? (selectedCashboxId || undefined) : undefined,
+        creditDueAmount: activeCodDelivery
+          ? netAmount
+          : paymentType === 'آجل'
+          ? effectiveRemainingAmount
+          : undefined,
+        paidAmount: activeCodDelivery ? 0 : effectivePaidAmount,
+        remainingAmount: activeCodDelivery ? netAmount : effectiveRemainingAmount,
+        paymentStatus: activeCodDelivery
+          ? 'آجل'
+          : paymentType === 'آجل'
+          ? 'آجل'
+          : (effectiveRemainingAmount === 0 ? 'مدفوع بالكامل' : (effectivePaidAmount > 0 ? 'مدفوع جزئياً' : 'آجل')),
+        cashboxId: activeCodDelivery
+          ? undefined
+          : (paymentType === 'نقدي' || (paymentType === 'جزئي' && effectivePaidAmount > 0))
+          ? (selectedCashboxId || undefined)
+          : undefined,
         customerId: isPlatformSale ? undefined : (selectedCustomerId || undefined),
         totalBeforeDiscount,
         bnplTotalAmount: isPlatformSale ? totalBnpl : 0,
         discountAmount: isPlatformSale ? totalDiscount : 0,
         pickupFeeAmount: isPlatformSale ? totalPickup : 0,
-        deliveryFee: isDeliveryFeeEnabled ? (Math.round(deliveryFeeNumber * 100) / 100) : 0,
+        deliveryFee: activeDeliveryOrder
+          ? Math.round(effectiveDeliveryOrderFee * 100) / 100
+          : isDeliveryFeeEnabled
+          ? (Math.round(deliveryFeeNumber * 100) / 100)
+          : 0,
+        ...(deliveryPayload ? { delivery: deliveryPayload } : {}),
         taxAmount: totalTax,
         netAmount,
         notes: notes.trim(),
@@ -2280,13 +2575,18 @@ export const POSPage: React.FC<POSPageProps> = ({
         void loadWarehouseStock(selectedWarehouseId);
       }
 
-      // حساب الباقي للعميل من القيمة المكتوبة بخانة المدفوع قبل مسحها
+      // حساب الباقي للعميل من القيمة المكتوبة بخانة المدفوع قبل مسحها (في COD لا يوجد تحصيل نقدي فوري ولا ترحيل على رصيد العميل)
       const parsedCash = parseFloat(paidAmountInput);
-      const changeGiven = (!isNaN(parsedCash) && parsedCash > netAmount) ? (parsedCash - netAmount) : undefined;
+      const changeGiven =
+        !activeCodDelivery && !isNaN(parsedCash) && parsedCash > netAmount
+          ? (parsedCash - netAmount)
+          : undefined;
       const currentCustomer = isPlatformSale ? undefined : customers.find(c => c.id === selectedCustomerId);
       let customerBalanceAfter: number | undefined = undefined;
       if (currentCustomer) {
-        customerBalanceAfter = (currentCustomer.currentBalance || 0) + (effectiveRemainingAmount || 0);
+        customerBalanceAfter = activeCodDelivery
+          ? (currentCustomer.currentBalance || 0)
+          : (currentCustomer.currentBalance || 0) + (effectiveRemainingAmount || 0);
       }
 
       const nextDefaultPlatformId = resolveDefaultPlatformId(salesRules, activePlatforms);
@@ -2300,6 +2600,7 @@ export const POSPage: React.FC<POSPageProps> = ({
       setNotes('');
       setPlatformOrderId('');
       setPlatformOrderError(false);
+      resetDeliveryOrderState();
       setIsManualCashOverride(false);
       setPaidAmountInput('0.00');
       if (isPlatformSale && salesRules.platformAlwaysCredit) {
@@ -2713,6 +3014,10 @@ export const POSPage: React.FC<POSPageProps> = ({
                 }
                 setCustomerFieldError(false);
                 setErrorMsg(null);
+                if (saleMode === 'customer' && isDeliveryEnabled) {
+                  const chosen = id ? customers.find(c => c.id === id) || null : null;
+                  syncDeliveryFromCustomer(chosen, deliveryConfig);
+                }
               }}
               canCreateCustomer={canCreateCustomer}
               onCustomerCreated={handleCustomerCreated}
@@ -2729,6 +3034,60 @@ export const POSPage: React.FC<POSPageProps> = ({
               }}
               platformOrderError={platformOrderError}
               platformAlwaysCredit={Boolean(salesRules.platformAlwaysCredit)}
+              deliveryConfig={deliveryConfig}
+              isDeliveryEnabled={isDeliveryEnabled}
+              onDeliveryEnabledChange={handleToggleDeliveryEnabled}
+              deliveryPaymentMode={deliveryPaymentMode}
+              onDeliveryPaymentModeChange={(mode) => {
+                setDeliveryPaymentMode(mode);
+                setErrorMsg(null);
+              }}
+              deliveryZoneId={deliveryZoneId}
+              onDeliveryZoneIdChange={(zoneId) => {
+                setDeliveryZoneId(zoneId);
+                setDeliveryZoneError(false);
+                setDeliveryZoneWarning(null);
+                setDeliveryFeeManual(false);
+                setErrorMsg(null);
+              }}
+              deliveryAddress={deliveryAddress}
+              onDeliveryAddressChange={(addr) => {
+                setDeliveryAddress(addr);
+                setDeliveryAddressError(false);
+                setErrorMsg(null);
+              }}
+              deliveryPhone={deliveryPhone}
+              onDeliveryPhoneChange={setDeliveryPhone}
+              deliveryOrderFeeInput={deliveryOrderFeeInput}
+              onDeliveryOrderFeeChange={(val) => {
+                if (!canEditDeliveryFee) return;
+                setDeliveryOrderFeeInput(val);
+                setDeliveryFeeManual(true);
+                setErrorMsg(null);
+              }}
+              deliveryFeeManual={deliveryFeeManual}
+              onResetDeliveryFeeToComputed={() => {
+                setDeliveryFeeManual(false);
+                setDeliveryOrderFeeInput(Math.round(computedDeliveryFee * 100) / 100);
+              }}
+              computedDeliveryFee={computedDeliveryFee}
+              effectiveDeliveryOrderFee={effectiveDeliveryOrderFee}
+              canEditDeliveryFee={canEditDeliveryFee}
+              deliveryZoneWarning={deliveryZoneWarning}
+              deliveryAssigneeType={deliveryAssigneeType}
+              onDeliveryAssigneeTypeChange={(t) => {
+                setDeliveryAssigneeType(t);
+                setErrorMsg(null);
+              }}
+              deliveryAssigneeId={deliveryAssigneeId}
+              onDeliveryAssigneeIdChange={(id) => {
+                setDeliveryAssigneeId(id);
+                setErrorMsg(null);
+              }}
+              deliveryTrackingNumber={deliveryTrackingNumber}
+              onDeliveryTrackingNumberChange={setDeliveryTrackingNumber}
+              deliveryAddressError={deliveryAddressError}
+              deliveryZoneError={deliveryZoneError}
               barcodeInput={barcodeInput}
               onBarcodeInput={setBarcodeInput}
               onBarcodeSubmit={handleBarcodeScanned}

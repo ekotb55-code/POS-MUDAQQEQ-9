@@ -951,21 +951,89 @@ export interface PayoutPlan {
   paid: number;
 }
 
+export interface PayoutPreview {
+  driverId: string;
+  driverName: string;
+  salary: number;
+  payCommission: boolean;
+  deductShortage: boolean;
+  commission: number;
+  orderIds: string[];
+  gross: number;
+  shortageOutstanding: number;
+  shortageDeducted: number;
+  paid: number;
+  canPayout: boolean;
+}
+
+function computePayoutBreakdown(
+  dues: DriverDues,
+  input: any
+): {
+  salary: number;
+  payCommission: boolean;
+  deductShortage: boolean;
+  commission: number;
+  orderIds: string[];
+  gross: number;
+  shortageDeducted: number;
+  paid: number;
+} {
+  const salary = money(input?.salary, 'المرتب', 0);
+  const payCommission = bool(input?.payCommission, true);
+  const commission = payCommission ? dues.commissionUnpaid : 0;
+  const orderIds = payCommission ? [...dues.unpaidOrderIds] : [];
+  const deductShortage = bool(input?.deductShortage, true);
+  const gross = r2(salary + commission);
+  const shortageDeducted =
+    deductShortage && dues.shortageOutstanding > 0 ? r2(Math.min(dues.shortageOutstanding, gross)) : 0;
+  const paid = r2(gross - shortageDeducted);
+  return { salary, payCommission, deductShortage, commission, orderIds, gross, shortageDeducted, paid };
+}
+
+/** معاينة صرف مستحقات الطيار بدون أي تعديل على البيانات (read-only) */
+export function previewPayout(
+  driverId: unknown,
+  input: any
+): { preview: PayoutPreview; dues: DriverDues } {
+  const d = config.drivers.find(x => x.id === driverId);
+  if (!d) throw new DeliveryError('الطيار مش موجود');
+  const dues = driverDues(d.id);
+  const b = computePayoutBreakdown(dues, input);
+  return {
+    preview: {
+      driverId: d.id,
+      driverName: d.name,
+      salary: b.salary,
+      payCommission: b.payCommission,
+      deductShortage: b.deductShortage,
+      commission: b.commission,
+      orderIds: b.orderIds,
+      gross: b.gross,
+      shortageOutstanding: dues.shortageOutstanding,
+      shortageDeducted: b.shortageDeducted,
+      paid: b.paid,
+      canPayout: b.gross > 0
+    },
+    dues
+  };
+}
+
 /** حساب صرف مستحقات الطيار: input = { salary, payCommission, deductShortage } */
 export function planPayout(driverId: unknown, input: any): PayoutPlan {
   const d = config.drivers.find(x => x.id === driverId);
   if (!d) throw new DeliveryError('الطيار مش موجود');
   const dues = driverDues(d.id);
-  const salary = money(input?.salary, 'المرتب', 0);
-  const payCommission = bool(input?.payCommission, true);
-  const commission = payCommission ? dues.commissionUnpaid : 0;
-  const orderIds = payCommission ? dues.unpaidOrderIds : [];
-  const wantDeduct = bool(input?.deductShortage, true);
-  const gross = r2(salary + commission);
-  const shortageDeducted = wantDeduct && dues.shortageOutstanding > 0 ? r2(Math.min(dues.shortageOutstanding, gross)) : 0;
-  const paid = r2(gross - shortageDeducted);
-  if (gross <= 0) throw new DeliveryError('مفيش مستحقات للصرف: اكتب المرتب أو اختار صرف العمولة');
-  return { driver: { ...d }, salary, commission, orderIds, shortageDeducted, paid };
+  const b = computePayoutBreakdown(dues, input);
+  if (b.gross <= 0) throw new DeliveryError('مفيش مستحقات للصرف: اكتب المرتب أو اختار صرف العمولة');
+  return {
+    driver: { ...d },
+    salary: b.salary,
+    commission: b.commission,
+    orderIds: b.orderIds,
+    shortageDeducted: b.shortageDeducted,
+    paid: b.paid
+  };
 }
 
 export function recordPayout(

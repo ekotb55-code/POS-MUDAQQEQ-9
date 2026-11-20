@@ -2347,6 +2347,8 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
       const asciiFallbackName =
         operationType === 'add_items'
           ? 'bulk-add-items-template.xlsx'
+          : operationType === 'add_categories'
+          ? 'bulk-add-categories-template.xlsx'
           : operationType === 'delete_items'
           ? 'bulk-delete-items-template.xlsx'
           : operationType === 'purchase_price'
@@ -3906,9 +3908,30 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
     }
   });
 
+  app.get('/api/delivery/payout-preview', requirePermission('delivery.settle') as any, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const q = req.query as Record<string, string>;
+      res.json({
+        success: true,
+        ...delivery.previewPayout(q.driverId, {
+          salary: q.salary,
+          payCommission: q.payCommission,
+          deductShortage: q.deductShortage
+        })
+      });
+    } catch (err: any) {
+      sendDeliveryError(res, err, 'تعذر معاينة صرف مستحقات الطيار');
+    }
+  });
+
   app.post('/api/delivery/payouts', requirePermission('delivery.settle') as any, (req: AuthenticatedRequest, res: Response) => {
     try {
-      res.json(deliveryService.payDriver(req.body || {}, deliverySessionOf(req)));
+      const result = deliveryService.payDriver(req.body || {}, deliverySessionOf(req));
+      if (result.requiresConfirmation) {
+        res.status(409).json({ ...result, code: result.code || 'PAYOUT_PREVIEW_CHANGED', error: result.message });
+        return;
+      }
+      res.json(result);
     } catch (err: any) {
       sendDeliveryError(res, err, 'تعذر صرف مستحقات الطيار');
     }

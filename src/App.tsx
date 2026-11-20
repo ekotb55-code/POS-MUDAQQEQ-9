@@ -103,6 +103,11 @@ import { WarehouseExcelTransferPage } from './pages/WarehouseExcelTransferPage';
 import { WarehouseDispatchOrdersPage } from './pages/WarehouseDispatchOrdersPage';
 import { VisitorDisplayPage } from './pages/VisitorDisplayPage';
 import { LabelPrintPage } from './pages/LabelPrintPage';
+import { DeliverySettingsPage } from './pages/DeliverySettingsPage';
+import { DeliveryOrdersPage } from './pages/DeliveryOrdersPage';
+import { DeliverySettlementsPage } from './pages/DeliverySettlementsPage';
+import { DeliveryMyOrdersPage } from './pages/DeliveryMyOrdersPage';
+import { DeliveryReportsPage } from './pages/DeliveryReportsPage';
 import CreditCollectionView from './components/CreditCollectionView';
 import { hasPermission, isSystemOwner } from './utils/permissions';
 import { normalizeNavigationTarget, resolvePathToTarget, isVisitorScreenOnlyUser } from './config/navigation';
@@ -268,7 +273,12 @@ export default function App() {
     'bulk_edit_excel',
     'categories',
     'platforms',
-    'settings'
+    'settings',
+    'delivery_settings',
+    'delivery_orders',
+    'delivery_settlements',
+    'delivery_my_orders',
+    'delivery_reports'
   ];
 
   const executeNavigate = useCallback((page: PageType, tab?: string) => {
@@ -392,6 +402,7 @@ export default function App() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [invoicePrintExtra, setInvoicePrintExtra] = useState<{ changeGiven?: number; customerBalanceAfter?: number }>({});
   const [preselectedInvoiceForReturn, setPreselectedInvoiceForReturn] = useState<Invoice | null>(null);
+  const [deliveryOrdersInitialSearch, setDeliveryOrdersInitialSearch] = useState<string>('');
   const [initialItemToSell, setInitialItemToSell] = useState<Item | null>(null);
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
 
@@ -407,12 +418,16 @@ export default function App() {
   const [manualBalanceResultHold, setManualBalanceResultHold] = useState<{ request: ManualBalanceRequest; entry: ManualBalanceEntry } | null>(null);
   const [balanceRequiredBanner, setBalanceRequiredBanner] = useState<string | null>(null);
 
-  const showInvoiceToast = (invoiceNumber: string) => {
+  const showInvoiceToast = (invoiceNumber: string, deliveryOrderId?: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToastInvoiceMessage(`تم حفظ الفاتورة ${invoiceNumber}`);
+    setToastInvoiceMessage(
+      deliveryOrderId
+        ? `تم حفظ الفاتورة ${invoiceNumber} • طلب التوصيل ${deliveryOrderId}`
+        : `تم حفظ الفاتورة ${invoiceNumber}`
+    );
     toastTimerRef.current = setTimeout(() => {
       setToastInvoiceMessage(null);
-    }, 3000);
+    }, deliveryOrderId ? 5000 : 3000);
   };
 
   const [showDeviceNamePrompt, setShowDeviceNamePrompt] = useState(false);
@@ -1518,7 +1533,7 @@ export default function App() {
   ) => {
     // «حفظ بدون طباعة» (F3) لا يطبع ولا يفتح معاينة الطباعة إطلاقًا
     if (extra?.shouldPrint === false) {
-      showInvoiceToast(createdInvoice.invoiceNumber);
+      showInvoiceToast(createdInvoice.invoiceNumber, createdInvoice.deliveryOrderId);
       setTimeout(() => {
         const barcodeInput = document.getElementById('pos-barcode-input');
         barcodeInput?.focus();
@@ -1534,7 +1549,7 @@ export default function App() {
       setInvoicePrintExtra(extra || {});
       setInvoiceToPrint(createdInvoice);
     } else {
-      showInvoiceToast(createdInvoice.invoiceNumber);
+      showInvoiceToast(createdInvoice.invoiceNumber, createdInvoice.deliveryOrderId);
       printReceipt(createdInvoice, {
         companySettings: config.companySettings,
         invoicePrintSettings: config.invoicePrintSettings,
@@ -2126,7 +2141,13 @@ export default function App() {
               <BulkEditExcelPage
                 user={user}
                 onRefreshItems={loadData}
-                initialOperationType={currentTab === 'add_items' ? 'add_items' : undefined}
+                initialOperationType={
+                  currentTab === 'add_items'
+                    ? 'add_items'
+                    : currentTab === 'add_categories'
+                    ? 'add_categories'
+                    : undefined
+                }
               />
             ) : (
               <div className="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200">
@@ -2151,6 +2172,64 @@ export default function App() {
             ) : (
               <div className="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200">
                 غير مصرح لك بعرض شاشة طباعة التكت
+              </div>
+            )
+          )}
+
+          {currentPage === 'delivery_settings' && (
+            (user.role === 'designer' || Boolean(user.isOwner) || hasPermission(user, 'delivery.settings')) ? (
+              <DeliverySettingsPage user={user} />
+            ) : (
+              <div className="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200 font-bold">
+                غير مصرح لك بعرض إعدادات التوصيل
+              </div>
+            )
+          )}
+
+          {currentPage === 'delivery_orders' && (
+            (user.role === 'designer' || Boolean(user.isOwner) || hasPermission(user, 'delivery.view')) ? (
+              <DeliveryOrdersPage
+                user={user}
+                onReturnCreated={loadData}
+                initialSearch={deliveryOrdersInitialSearch}
+                onClearInitialSearch={() => setDeliveryOrdersInitialSearch('')}
+              />
+            ) : (
+              <div className="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200 font-bold">
+                غير مصرح لك بعرض طلبات التوصيل
+              </div>
+            )
+          )}
+
+          {currentPage === 'delivery_settlements' && (
+            (user.role === 'designer' || Boolean(user.isOwner) || hasPermission(user, 'delivery.settle')) ? (
+              <DeliverySettlementsPage
+                user={user}
+                onFinancialChange={loadData}
+              />
+            ) : (
+              <div className="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200 font-bold">
+                غير مصرح لك بعرض التسويات ومستحقات الطيارين
+              </div>
+            )
+          )}
+
+          {currentPage === 'delivery_my_orders' && (
+            (user.role === 'designer' || Boolean(user.isOwner) || hasPermission(user, 'delivery.driver')) ? (
+              <DeliveryMyOrdersPage user={user} />
+            ) : (
+              <div className="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200 font-bold">
+                غير مصرح لك بعرض شاشة طلبات الطيار
+              </div>
+            )
+          )}
+
+          {currentPage === 'delivery_reports' && (
+            (user.role === 'designer' || Boolean(user.isOwner) || hasPermission(user, 'delivery.reports')) ? (
+              <DeliveryReportsPage user={user} />
+            ) : (
+              <div className="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200 font-bold">
+                غير مصرح لك بعرض تقارير التوصيل
               </div>
             )
           )}
@@ -2297,6 +2376,11 @@ export default function App() {
               }}
               onInitiateReturn={handleInitiateReturn}
               onUpdateInvoice={handleUpdateInvoice}
+              onNavigateToDeliveryOrders={(searchTerm) => {
+                setDeliveryOrdersInitialSearch(searchTerm || '');
+                handleNavigate('delivery_orders');
+              }}
+              onNavigateToDeliverySettlements={() => handleNavigate('delivery_settlements')}
             />
           )}
 

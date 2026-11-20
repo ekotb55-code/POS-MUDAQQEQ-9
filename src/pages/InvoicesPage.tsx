@@ -1,6 +1,17 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { Invoice, Platform, Item, ItemPlatformCost, ReturnRecord, UserAccount, UserRole, TaxSettings } from '../types';
+import {
+  Invoice,
+  Platform,
+  Item,
+  ItemPlatformCost,
+  ReturnRecord,
+  UserAccount,
+  UserRole,
+  TaxSettings,
+  DeliveryOrder,
+  DeliveryOrderStatus
+} from '../types';
 import { hasPermission } from '../utils/permissions';
 import { EditInvoiceModal } from '../components/EditInvoiceModal';
 import { DateRangeFilter } from '../components/DateRangeFilter';
@@ -14,7 +25,9 @@ import {
   FileEdit,
   Ban,
   AlertCircle,
-  Download
+  Download,
+  Truck,
+  ArrowLeft
 } from 'lucide-react';
 import { api } from '../api/client';
 import {
@@ -30,6 +43,39 @@ import {
 } from '../components/ui';
 import { ShortcutBadge } from '../context/KeyboardShortcutsContext';
 
+const FINAL_DELIVERY_STATUSES: readonly DeliveryOrderStatus[] = ['اتسلم', 'رجع المحل', 'اتلغى'];
+
+const DELIVERY_EDIT_BLOCK_REASON =
+  'لا يمكن تعديل فاتورة التوصيل من شاشة الفواتير. إذا لم يُسلَّم الطلب أرجعه («رجع المحل») أو ألغِه («اتلغى») من شاشة إدارة التوصيل.';
+
+const DELIVERY_CANCEL_BLOCK_REASON =
+  'لا يمكن إلغاء فاتورة التوصيل من شاشة الفواتير. ألغِ الطلب من شاشة إدارة التوصيل بحالة «اتلغى» لتسجيل مرتجع رسمي وإرجاع المخزون تلقائيًا.';
+
+function deliveryStatusTextClass(status: DeliveryOrderStatus): string {
+  switch (status) {
+    case 'جديد':
+      return 'text-sky-700 dark:text-sky-300';
+    case 'خرج للتوصيل':
+      return 'text-amber-700 dark:text-amber-300';
+    case 'اتسلم':
+      return 'text-emerald-700 dark:text-emerald-300';
+    case 'ما اتسلمش':
+      return 'text-orange-700 dark:text-orange-300';
+    case 'رجع المحل':
+    case 'اتلغى':
+      return 'text-rose-700 dark:text-rose-300';
+    default:
+      return 'text-[var(--text-primary)]';
+  }
+}
+
+function formatDeliveryAssignee(order: DeliveryOrder): string {
+  if (!order.assigneeName) return 'غير موزع بعد';
+  if (order.assigneeType === 'driver') return `طيار — ${order.assigneeName}`;
+  if (order.assigneeType === 'courier') return `شركة شحن — ${order.assigneeName}`;
+  return order.assigneeName;
+}
+
 interface InvoicesPageProps {
   invoices: Invoice[];
   platforms?: Platform[];
@@ -42,6 +88,8 @@ interface InvoicesPageProps {
   onPrintInvoice: (invoice: Invoice, isReprint?: boolean, forceModal?: boolean) => void;
   onInitiateReturn: (invoice: Invoice) => void;
   onUpdateInvoice?: (invoiceNumber: string, payload: any) => Promise<void>;
+  onNavigateToDeliveryOrders?: (searchTerm?: string) => void;
+  onNavigateToDeliverySettlements?: () => void;
 }
 
 export const InvoicesPage: React.FC<InvoicesPageProps> = ({
@@ -55,12 +103,146 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
   taxSettings,
   onPrintInvoice,
   onInitiateReturn,
-  onUpdateInvoice
+  onUpdateInvoice,
+  onNavigateToDeliveryOrders,
+  onNavigateToDeliverySettlements
 }) => {
   const isManager = userRole === 'manager' || userRole === 'designer' || user?.isOwner;
   const canViewProfit = isManager || hasPermission(user, 'reports.view_profit');
   const canEditAfterSave = user?.role === 'designer' || Boolean(user?.isOwner) || hasPermission(user, 'invoices.edit_after_save');
   const canCancel = user?.role === 'designer' || Boolean(user?.isOwner) || hasPermission(user, 'invoices.cancel');
+  const canViewDelivery = user?.role === 'designer' || Boolean(user?.isOwner) || hasPermission(user, 'delivery.view');
+  const canSettleDelivery = user?.role === 'designer' || Boolean(user?.isOwner) || hasPermission(user, 'delivery.settle');
+
+  const [deliveryOrders, setDeliveryOrders] = useState<DeliveryOrder[]>([]);
+  const [deliveryOrdersLoading, setDeliveryOrdersLoading] = useState<boolean>(false);
+  const [deliveryOrdersError, setDeliveryOrdersError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!canViewDelivery) {
+      setDeliveryOrders([]);
+      setDeliveryOrdersLoading(false);
+      setDeliveryOrdersError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setDeliveryOrdersLoading(true);
+    setDeliveryOrdersError(null);
+
+    api
+      .getDeliveryOrders()
+      .then((res) => {
+        if (cancelled) return;
+        if (res.success && Array.isArray(res.orders)) {
+          setDeliveryOrders(res.orders);
+        } else {
+          setDeliveryOrdersError(res.error || 'تعذر تحميل بيانات طلبات التوصيل');
+        }
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setDeliveryOrdersError(err?.message || 'تعذر تحميل بيانات طلبات التوصيل');
+      })
+      .finally(() => {
+        if (!cancelled) setDeliveryOrdersLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canViewDelivery, invoices]);
+
+  const deliveryOrdersIndex = useMemo(() => {
+    const byId = new Map<string, DeliveryOrder>();
+    const byInvoiceNumber = new Map<string, DeliveryOrder>();
+    for (const order of deliveryOrders) {
+      if (order.id) byId.set(order.id, order);
+      if (order.invoiceNumber) byInvoiceNumber.set(order.invoiceNumber, order);
+    }
+    return { byId, byInvoiceNumber };
+  }, [deliveryOrders]);
+
+  const getLinkedDeliveryOrder = useCallback(
+    (inv: Invoice): DeliveryOrder | null => {
+      if (inv.deliveryOrderId) {
+        const byId = deliveryOrdersIndex.byId.get(inv.deliveryOrderId);
+        if (byId) return byId;
+      }
+      return deliveryOrdersIndex.byInvoiceNumber.get(inv.invoiceNumber) || null;
+    },
+    [deliveryOrdersIndex]
+  );
+
+  const isDeliveryInvoice = useCallback(
+    (inv: Invoice): boolean =>
+      Boolean(inv.deliveryOrderId || inv.creditPartyType === 'delivery' || getLinkedDeliveryOrder(inv)),
+    [getLinkedDeliveryOrder]
+  );
+
+  const getManualReturnEligibility = useCallback(
+    (inv: Invoice): { allowed: boolean; reason: string } => {
+      if (!isDeliveryInvoice(inv)) {
+        return { allowed: true, reason: '' };
+      }
+
+      if (inv.status === 'مرتجع' || inv.status === 'ملغاة') {
+        return { allowed: false, reason: 'الفاتورة مغلقة بالفعل.' };
+      }
+
+      if (deliveryOrdersLoading) {
+        return { allowed: false, reason: 'جاري التحقق من حالة طلب التوصيل وتسويته...' };
+      }
+
+      if (!canViewDelivery) {
+        return {
+          allowed: false,
+          reason:
+            'تعذر التحقق من حالة طلب التوصيل وتسويته لعدم توفر صلاحية عرض التوصيل. راجع شاشة إدارة التوصيل.'
+        };
+      }
+
+      const order = getLinkedDeliveryOrder(inv);
+      if (deliveryOrdersError || !order) {
+        return {
+          allowed: false,
+          reason: 'تعذر جلب حالة طلب التوصيل أو تسويته من السيرفر. راجع شاشة إدارة التوصيل أولًا.'
+        };
+      }
+
+      if (!FINAL_DELIVERY_STATUSES.includes(order.status)) {
+        return {
+          allowed: false,
+          reason: `طلب التوصيل ما زال مفتوحًا (${order.status}). إذا لم يُسلَّم الطلب أرجعه من شاشة إدارة التوصيل بحالة «رجع المحل» أو ألغِه بحالة «اتلغى».`
+        };
+      }
+
+      if (order.status === 'رجع المحل' || order.status === 'اتلغى' || Boolean(order.returnNumber)) {
+        return {
+          allowed: false,
+          reason: `تم إغلاق طلب التوصيل بحالة «${order.status}»${order.returnNumber ? ` بمرتجع رسمي رقم ${order.returnNumber}` : ''}.`
+        };
+      }
+
+      if (order.status === 'اتسلم' && order.paymentMode === 'cod' && !order.settlementId) {
+        return {
+          allowed: false,
+          reason:
+            'طلب التوصيل تم تسليمه (الدفع عند الاستلام) ولم تُسوَّ مستحقاته بعد. سوِّ الطلب من شاشة تسويات التوصيل أولًا قبل تسجيل مرتجع يدوي.'
+        };
+      }
+
+      if (order.status === 'اتسلم' && (order.paymentMode === 'prepaid' || Boolean(order.settlementId))) {
+        return { allowed: true, reason: '' };
+      }
+
+      return {
+        allowed: false,
+        reason: 'لا يمكن تسجيل مرتجع يدوي لهذه الفاتورة حاليًا؛ راجع شاشة إدارة التوصيل.'
+      };
+    },
+    [canViewDelivery, deliveryOrdersError, deliveryOrdersLoading, getLinkedDeliveryOrder, isDeliveryInvoice]
+  );
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -170,12 +352,13 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
       if (!matchesPlatform) return false;
 
       if (!normQ) return true;
+      const linkedOrder = getLinkedDeliveryOrder(inv);
       const haystack = normalizeArabicText(
-        `${inv.invoiceNumber || ''} ${inv.platformOrderId || ''} ${inv.offlineProvisionalNo || ''} ${inv.tempInvoiceNumber || ''} ${inv.platform || ''} ${inv.notes || ''} ${inv.createdBy || ''} ${inv.customerName || ''}`
+        `${inv.invoiceNumber || ''} ${inv.platformOrderId || ''} ${inv.offlineProvisionalNo || ''} ${inv.tempInvoiceNumber || ''} ${inv.platform || ''} ${inv.notes || ''} ${inv.createdBy || ''} ${inv.customerName || ''} ${linkedOrder?.number || ''} ${linkedOrder?.trackingNumber || ''} ${linkedOrder?.assigneeName || ''} ${linkedOrder?.zoneName || ''} ${linkedOrder?.returnNumber || ''} ${linkedOrder?.status || ''}`
       );
       return haystack.includes(normQ);
     });
-  }, [effectiveInvoices, searchQuery, statusFilter, platformFilter, dateRange.from, dateRange.to]);
+  }, [effectiveInvoices, searchQuery, statusFilter, platformFilter, dateRange.from, dateRange.to, getLinkedDeliveryOrder]);
 
   const periodLabel = useMemo(() => {
     if (dateRange.from && dateRange.to) return `من ${dateRange.from} إلى ${dateRange.to}`;
@@ -207,9 +390,12 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
   const handleExportPeriodInvoices = () => {
     if (filteredInvoices.length === 0) return;
     const rows = filteredInvoices.map(inv => {
+      const linkedOrder = getLinkedDeliveryOrder(inv);
       const base: Record<string, any> = {
         'رقم الفاتورة': inv.invoiceNumber,
         'رقم طلب المنصة': inv.platformOrderId || '-',
+        'رقم طلب التوصيل': linkedOrder?.number || (inv.deliveryOrderId ? 'توصيل' : '-'),
+        'حالة التوصيل': linkedOrder?.status || '-',
         'التاريخ': inv.date.slice(0, 10),
         'المنصة': inv.platform,
         'المخزن': inv.warehouseName || '-',
@@ -294,6 +480,102 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
     }
     return rows;
   }, [selectedInvoice, isManager]);
+
+  const selectedDeliveryOrder = useMemo(
+    () => (selectedInvoice ? getLinkedDeliveryOrder(selectedInvoice) : null),
+    [selectedInvoice, getLinkedDeliveryOrder]
+  );
+
+  const selectedIsDelivery = useMemo(
+    () => (selectedInvoice ? isDeliveryInvoice(selectedInvoice) : false),
+    [selectedInvoice, isDeliveryInvoice]
+  );
+
+  const selectedReturnEligibility = useMemo(
+    () => (selectedInvoice ? getManualReturnEligibility(selectedInvoice) : { allowed: false, reason: '' }),
+    [selectedInvoice, getManualReturnEligibility]
+  );
+
+  const selectedIsOfflinePending = Boolean(
+    selectedInvoice &&
+      (selectedInvoice.offlinePending || String(selectedInvoice.invoiceNumber || '').startsWith('OFF-'))
+  );
+
+  const selectedDeliveryDetailRows = useMemo(() => {
+    if (!selectedInvoice || !selectedIsDelivery) return [];
+    const order = selectedDeliveryOrder;
+    const rows: Array<{ label: string; value: string; tone?: 'default' | 'sale' | 'purchase' | 'accent'; emphasize?: boolean }> = [];
+
+    if (order) {
+      rows.push({
+        label: 'رقم طلب التوصيل',
+        value: order.number || '—',
+        emphasize: true
+      });
+      rows.push({
+        label: 'حالة الطلب',
+        value: order.failReason ? `${order.status} (${order.failReason})` : order.status,
+        tone: order.status === 'اتسلم' ? 'sale' : order.status === 'رجع المحل' || order.status === 'اتلغى' ? 'purchase' : 'accent',
+        emphasize: true
+      });
+      rows.push({
+        label: 'طريقة الدفع',
+        value: order.paymentMode === 'cod' ? 'الدفع عند الاستلام' : 'مدفوع مقدمًا'
+      });
+      if (order.paymentMode === 'cod') {
+        rows.push({
+          label: 'حالة تسوية التحصيل',
+          value: order.settlementId ? 'تمت التسوية' : 'لم تُسوَّ بعد',
+          tone: order.settlementId ? 'sale' : 'purchase'
+        });
+      }
+      rows.push({
+        label: 'منطقة التوصيل',
+        value: order.zoneName || '—'
+      });
+      rows.push({
+        label: 'رسوم التوصيل',
+        value: `${Number(order.fee ?? selectedInvoice.deliveryFee ?? 0).toFixed(2)} ج.م`
+      });
+      rows.push({
+        label: 'المسؤول عن التوصيل',
+        value: formatDeliveryAssignee(order)
+      });
+      if (order.trackingNumber) {
+        rows.push({
+          label: 'رقم التتبع',
+          value: order.trackingNumber
+        });
+      }
+      if (order.returnNumber) {
+        rows.push({
+          label: 'رقم المرتجع الرسمي',
+          value: order.returnNumber,
+          tone: 'purchase',
+          emphasize: true
+        });
+      }
+    } else {
+      if (selectedInvoice.deliveryOrderId) {
+        rows.push({
+          label: 'مرجع طلب التوصيل',
+          value: selectedInvoice.deliveryOrderId
+        });
+      }
+      rows.push({
+        label: 'رسوم التوصيل',
+        value: `${Number(selectedInvoice.deliveryFee || 0).toFixed(2)} ج.م`
+      });
+      if (selectedInvoice.creditPartyType === 'delivery') {
+        rows.push({
+          label: 'طريقة الدفع',
+          value: 'الدفع عند الاستلام'
+        });
+      }
+    }
+
+    return rows;
+  }, [selectedInvoice, selectedIsDelivery, selectedDeliveryOrder]);
 
   return (
     <PageSurface
@@ -468,11 +750,42 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
               const provisionalNo = inv.offlineProvisionalNo || inv.tempInvoiceNumber;
               const deductions = (inv.discountAmount || 0) + (inv.pickupFeeAmount || 0);
               const isCancelled = inv.status === 'ملغاة';
+              const deliveryOrder = getLinkedDeliveryOrder(inv);
+              const isDelivery = isDeliveryInvoice(inv);
+              const returnEligibility = getManualReturnEligibility(inv);
 
               return (
                 <tr key={inv.invoiceNumber}>
                   <td className={`${COMPACT_TABLE_NUM_CLASS} font-mono font-bold`}>
                     <div>{inv.invoiceNumber}</div>
+                    {isDelivery && (
+                      <div className="text-[11px] font-sans font-semibold flex flex-wrap items-center gap-1 text-sky-700 dark:text-sky-300">
+                        <Truck className="w-3.5 h-3.5 shrink-0" />
+                        <span>توصيل</span>
+                        {deliveryOrder?.number && (
+                          <>
+                            <span>·</span>
+                            <span className="font-mono">{deliveryOrder.number}</span>
+                          </>
+                        )}
+                        {deliveryOrder?.status && (
+                          <>
+                            <span>·</span>
+                            <span className={deliveryStatusTextClass(deliveryOrder.status)}>
+                              {deliveryOrder.status}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {deliveryOrder?.returnNumber && (
+                      <div className="text-[11px] font-sans text-[var(--text-secondary)]">
+                        مرتجع رسمي:{' '}
+                        <span className="font-mono font-bold text-[var(--text-primary)]">
+                          {deliveryOrder.returnNumber}
+                        </span>
+                      </div>
+                    )}
                     {inv.platform && inv.platform !== 'البيع المباشر' && inv.platformOrderId && (
                       <div className="text-[11px] font-sans text-[var(--text-secondary)]">
                         رقم طلب المنصة: <span className="font-mono font-bold text-[var(--text-primary)]">{inv.platformOrderId}</span>
@@ -497,7 +810,29 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                     <div className="font-semibold text-[var(--text-primary)]">{inv.platform}</div>
                     {inv.paymentType === 'آجل' && (
                       <div className="text-[11px] text-[var(--text-secondary)]">
-                        آجل ({inv.creditPartyType === 'platform' ? `منصة: ${inv.creditPartyName || inv.platform}` : `عميل: ${inv.creditPartyName || inv.customerName || '—'}`})
+                        {inv.creditPartyType === 'delivery'
+                          ? 'الدفع عند الاستلام (توصيل)'
+                          : `آجل (${
+                              inv.creditPartyType === 'platform'
+                                ? `منصة: ${inv.creditPartyName || inv.platform}`
+                                : `عميل: ${inv.creditPartyName || inv.customerName || '—'}`
+                            })`}
+                      </div>
+                    )}
+                    {isDelivery && deliveryOrder && (
+                      <div className="text-[11px] text-[var(--text-secondary)]">
+                        {deliveryOrder.paymentMode === 'cod'
+                          ? `عند الاستلام · ${deliveryOrder.settlementId ? 'تمت التسوية' : 'غير مسوّى'}`
+                          : 'مدفوع مقدمًا'}
+                        {deliveryOrder.zoneName ? ` · ${deliveryOrder.zoneName}` : ''}
+                        {(deliveryOrder.fee ?? inv.deliveryFee ?? 0) > 0
+                          ? ` · رسوم ${Number(deliveryOrder.fee ?? inv.deliveryFee ?? 0).toFixed(2)} ج.م`
+                          : ''}
+                      </div>
+                    )}
+                    {isDelivery && !deliveryOrder && inv.deliveryFee !== undefined && inv.deliveryFee > 0 && (
+                      <div className="text-[11px] text-[var(--text-secondary)]">
+                        رسوم التوصيل: {inv.deliveryFee.toFixed(2)} ج.م
                       </div>
                     )}
                   </td>
@@ -569,42 +904,80 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                       </button>
 
                       {canEditAfterSave && !isOfflinePending && (
-                        <button
-                          type="button"
-                          onClick={() => setInvoiceToEdit(inv)}
-                          className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg bg-[#1668B2] hover:bg-[#125592] text-white text-xs font-bold transition cursor-pointer"
-                          title="تعديل الفاتورة بصلاحيات مفصلة"
-                        >
-                          <FileEdit className="w-3.5 h-3.5" />
-                          <span>تعديل</span>
-                        </button>
+                        isDelivery ? (
+                          <button
+                            type="button"
+                            disabled
+                            aria-disabled="true"
+                            className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg border border-[var(--border-color)] text-[var(--text-secondary)] text-xs font-bold opacity-50 cursor-not-allowed"
+                            title={DELIVERY_EDIT_BLOCK_REASON}
+                          >
+                            <FileEdit className="w-3.5 h-3.5" />
+                            <span>تعديل</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setInvoiceToEdit(inv)}
+                            className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg bg-[#1668B2] hover:bg-[#125592] text-white text-xs font-bold transition cursor-pointer"
+                            title="تعديل الفاتورة بصلاحيات مفصلة"
+                          >
+                            <FileEdit className="w-3.5 h-3.5" />
+                            <span>تعديل</span>
+                          </button>
+                        )
                       )}
 
                       {inv.status !== 'مرتجع' && inv.status !== 'ملغاة' && !isOfflinePending && (
-                        <button
-                          type="button"
-                          onClick={() => onInitiateReturn(inv)}
-                          className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-low text-xs font-bold transition cursor-pointer"
-                          title="تسجيل مرتجع لهذه الفاتورة"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>مرتجع</span>
-                        </button>
+                        returnEligibility.allowed ? (
+                          <button
+                            type="button"
+                            onClick={() => onInitiateReturn(inv)}
+                            className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-low text-xs font-bold transition cursor-pointer"
+                            title="تسجيل مرتجع لهذه الفاتورة"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>مرتجع</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled
+                            aria-disabled="true"
+                            className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg border border-[var(--border-color)] text-[var(--text-secondary)] text-xs font-bold opacity-50 cursor-not-allowed"
+                            title={returnEligibility.reason}
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>مرتجع</span>
+                          </button>
+                        )
                       )}
 
                       {canCancel && inv.status !== 'ملغاة' && !isOfflinePending && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setInvoiceToCancel(inv);
-                            setCancellationReason('');
-                            setCancelError(null);
-                          }}
-                          className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-out transition cursor-pointer"
-                          title="إلغاء الفاتورة بقيد عكسي معتمد"
-                        >
-                          <Ban className="w-4 h-4" />
-                        </button>
+                        isDelivery ? (
+                          <button
+                            type="button"
+                            disabled
+                            aria-disabled="true"
+                            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-lg border border-[var(--border-color)] text-[var(--text-secondary)] opacity-50 cursor-not-allowed"
+                            title={DELIVERY_CANCEL_BLOCK_REASON}
+                          >
+                            <Ban className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setInvoiceToCancel(inv);
+                              setCancellationReason('');
+                              setCancelError(null);
+                            }}
+                            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-out transition cursor-pointer"
+                            title="إلغاء الفاتورة بقيد عكسي معتمد"
+                          >
+                            <Ban className="w-4 h-4" />
+                          </button>
+                        )
                       )}
                     </div>
                   </td>
@@ -668,7 +1041,7 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                 <Printer className="w-4 h-4" />
                 <span>إعادة طباعة الإيصال</span>
               </button>
-              {canEditAfterSave && (
+              {canEditAfterSave && !selectedIsOfflinePending && !selectedIsDelivery && (
                 <button
                   type="button"
                   onClick={() => {
@@ -681,6 +1054,24 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                   <span>تعديل الفاتورة</span>
                 </button>
               )}
+              {selectedIsDelivery &&
+                selectedInvoice.status !== 'مرتجع' &&
+                selectedInvoice.status !== 'ملغاة' &&
+                !selectedIsOfflinePending &&
+                selectedReturnEligibility.allowed && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = selectedInvoice;
+                      setSelectedInvoice(null);
+                      onInitiateReturn(target);
+                    }}
+                    className="min-h-[44px] inline-flex items-center gap-1.5 px-4 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-low font-bold text-xs transition cursor-pointer"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>تسجيل مرتجع يدوي</span>
+                  </button>
+                )}
               {canEditAfterSave &&
                 selectedInvoice.platform &&
                 selectedInvoice.platform !== 'البيع المباشر' &&
@@ -723,7 +1114,9 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                 <span>
                   طرف الآجل:{' '}
                   <strong className="text-[var(--text-primary)]">
-                    {selectedInvoice.creditPartyType === 'platform'
+                    {selectedInvoice.creditPartyType === 'delivery'
+                      ? 'التوصيل (الدفع عند الاستلام)'
+                      : selectedInvoice.creditPartyType === 'platform'
                       ? `منصة (${selectedInvoice.creditPartyName || selectedInvoice.platform})`
                       : `عميل (${selectedInvoice.creditPartyName || selectedInvoice.customerName || '—'})`}
                   </strong>
@@ -759,6 +1152,101 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
               </span>
             )}
           </div>
+
+          {selectedIsDelivery && (
+            <>
+              <SectionHeading title="بيانات التوصيل وضوابط الفاتورة" withTopDivider />
+
+              {deliveryOrdersLoading && !selectedDeliveryOrder ? (
+                <div className="text-xs text-[var(--text-secondary)]">
+                  جاري تحميل بيانات طلب التوصيل...
+                </div>
+              ) : (
+                <>
+                  {selectedDeliveryDetailRows.length > 0 && (
+                    <ReportSummaryTable rows={selectedDeliveryDetailRows} />
+                  )}
+
+                  {!selectedDeliveryOrder && (
+                    <div className="flex items-start gap-2 text-xs text-[var(--text-secondary)]">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 ui-stock-low" />
+                      <span>
+                        {!canViewDelivery
+                          ? 'لا تتوفر لديك صلاحية عرض طلبات التوصيل لعرض حالة الطلب أو حالة التسوية.'
+                          : deliveryOrdersError || 'تعذر العثور على تفاصيل طلب التوصيل المرتبط بهذه الفاتورة.'}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="border-r-2 border-[#1668B2] pr-3 text-xs text-[var(--text-secondary)] space-y-1.5">
+                <p className="font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                  <Truck className="w-4 h-4 text-[#1668B2] shrink-0" />
+                  <span>ضوابط فاتورة التوصيل</span>
+                </p>
+                <p>
+                  <strong className="text-[var(--text-primary)]">التعديل والإلغاء:</strong>{' '}
+                  لا يمكن تعديل أو إلغاء فاتورة التوصيل من شاشة الفواتير. لتغيير حالة الطلب أو إرجاعه («رجع المحل») أو إلغائه («اتلغى») بمرتجع رسمي، استخدم شاشة إدارة التوصيل.
+                </p>
+                {selectedInvoice.status !== 'مرتجع' && selectedInvoice.status !== 'ملغاة' && !selectedIsOfflinePending && (
+                  <p>
+                    <strong className="text-[var(--text-primary)]">المرتجع اليدوي:</strong>{' '}
+                    {selectedReturnEligibility.allowed ? (
+                      <span className="ui-stock-in font-semibold">
+                        متاح الآن لأن الطلب تم تسليمه
+                        {selectedDeliveryOrder?.paymentMode === 'cod' ? ' وتمت تسوية مستحقاته.' : ' وهو مدفوع مقدمًا.'}
+                      </span>
+                    ) : (
+                      <span className="ui-stock-low font-semibold">
+                        غير متاح حاليًا — {selectedReturnEligibility.reason}
+                      </span>
+                    )}
+                  </p>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {canViewDelivery && onNavigateToDeliveryOrders ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetSearch = selectedDeliveryOrder?.number || selectedInvoice.invoiceNumber;
+                        setSelectedInvoice(null);
+                        onNavigateToDeliveryOrders(targetSearch);
+                      }}
+                      className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 rounded-lg bg-[#1668B2] hover:bg-[#125592] text-white text-xs font-bold transition cursor-pointer"
+                    >
+                      <Truck className="w-4 h-4" />
+                      <span>فتح الطلب في شاشة إدارة التوصيل</span>
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <span className="text-[var(--text-secondary)]">
+                      لإدارة الطلب أو تغيير حالته أو إلغائه، يرجى المتابعة من شاشة «إدارة التوصيل» عبر مستخدم يملك الصلاحية.
+                    </span>
+                  )}
+
+                  {selectedDeliveryOrder?.status === 'اتسلم' &&
+                    selectedDeliveryOrder.paymentMode === 'cod' &&
+                    !selectedDeliveryOrder.settlementId &&
+                    canSettleDelivery &&
+                    onNavigateToDeliverySettlements && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedInvoice(null);
+                          onNavigateToDeliverySettlements();
+                        }}
+                        className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] text-[var(--text-primary)] text-xs font-bold transition cursor-pointer"
+                      >
+                        <span>الانتقال إلى تسويات التوصيل</span>
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                </div>
+              </div>
+            </>
+          )}
 
           <SectionHeading title={`الأصناف (${selectedInvoice.lines?.length || 0})`} withTopDivider />
 

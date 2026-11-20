@@ -8,6 +8,7 @@ import {
   PageType,
   UserAccount,
   UserRole,
+  DeliveryConfigZoneOption,
 } from '../types';
 import { api } from '../api/client';
 import { generateIdempotencyKey } from '../utils/idempotency';
@@ -1073,18 +1074,57 @@ const CustomerModal: React.FC<CustomerModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const initialZoneId = customer?.zoneId || '';
   const [name, setName] = useState(customer?.name || '');
   const [code, setCode] = useState(customer?.code || '');
   const [groupId, setGroupId] = useState(customer?.groupId || '');
   const [phone, setPhone] = useState(customer?.phone || '');
   const [email, setEmail] = useState(customer?.email || '');
   const [address, setAddress] = useState(customer?.address || '');
+  const [zoneId, setZoneId] = useState<string>(initialZoneId);
+  const [deliveryZones, setDeliveryZones] = useState<DeliveryConfigZoneOption[]>([]);
+  const [zonesLoading, setZonesLoading] = useState<boolean>(true);
+  const [zonesError, setZonesError] = useState<string | null>(null);
   const [taxNumber, setTaxNumber] = useState(customer?.taxNumber || '');
   const [commercialRecord, setCommercialRecord] = useState(customer?.commercialRecord || '');
   const [openingBalance, setOpeningBalance] = useState<number>(customer?.openingBalance || 0);
   const [notes, setNotes] = useState(customer?.notes || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setZonesLoading(true);
+    setZonesError(null);
+    api
+      .getDeliveryConfig()
+      .then((res) => {
+        if (!active) return;
+        if (res && res.success) {
+          setDeliveryZones(Array.isArray(res.zones) ? res.zones : []);
+        } else {
+          setDeliveryZones([]);
+          setZonesError(res?.error || 'تعذر تحميل قائمة مناطق التوصيل');
+        }
+      })
+      .catch((err: any) => {
+        if (!active) return;
+        setDeliveryZones([]);
+        setZonesError(err?.message || 'تعذر تحميل قائمة مناطق التوصيل');
+      })
+      .finally(() => {
+        if (active) setZonesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const hasUnlistedInitialZone =
+    Boolean(initialZoneId) &&
+    !zonesLoading &&
+    !deliveryZones.some((z) => z.id === initialZoneId);
+  const isCurrentZoneInactive = hasUnlistedInitialZone && !zonesError;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1105,6 +1145,7 @@ const CustomerModal: React.FC<CustomerModalProps> = ({
         phone: phone.trim() || undefined,
         email: email.trim() || undefined,
         address: address.trim() || undefined,
+        zoneId: zoneId || '',
         taxNumber: taxNumber.trim() || undefined,
         commercialRecord: commercialRecord.trim() || undefined,
         openingBalance: Number(openingBalance || 0),
@@ -1231,8 +1272,57 @@ const CustomerModal: React.FC<CustomerModalProps> = ({
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               placeholder="عنوان العميل أو مقر التسليم..."
-              className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.name} text-xs`}
+              className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.name} min-h-[44px] text-xs`}
             />
+          </div>
+          <div className="max-w-full">
+            <label
+              htmlFor="customer-delivery-zone"
+              className="block text-xs font-bold text-[var(--text-primary)] mb-1"
+            >
+              منطقة التوصيل
+            </label>
+            <select
+              id="customer-delivery-zone"
+              value={zoneId}
+              onChange={(e) => setZoneId(e.target.value)}
+              className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} min-h-[44px] text-xs`}
+            >
+              <option value="">بدون منطقة</option>
+              {zonesLoading && initialZoneId && (
+                <option value={initialZoneId}>المنطقة الحالية (جاري التحميل...)</option>
+              )}
+              {hasUnlistedInitialZone && zonesError && (
+                <option value={initialZoneId}>المنطقة الحالية المحفوظة</option>
+              )}
+              {isCurrentZoneInactive && (
+                <option value={initialZoneId}>منطقة حالية (غير نشطة)</option>
+              )}
+              {deliveryZones.map((z) => (
+                <option key={z.id} value={z.id}>
+                  {z.name}
+                </option>
+              ))}
+            </select>
+            {zonesLoading && (
+              <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                جاري تحميل مناطق التوصيل...
+              </p>
+            )}
+            {zonesError && (
+              <p
+                role="alert"
+                className="mt-1 text-[11px] font-semibold text-amber-800 dark:text-amber-200 max-w-[260px]"
+              >
+                {zonesError}. يمكنك إكمال حفظ العميل بشكل طبيعي
+                {initialZoneId ? ' مع الاحتفاظ بمنطقته الحالية.' : '.'}
+              </p>
+            )}
+            {isCurrentZoneInactive && zoneId === initialZoneId && (
+              <p className="mt-1 text-[11px] font-semibold text-amber-800 dark:text-amber-200 max-w-[260px]">
+                منطقة التوصيل الحالية لهذا العميل غير نشطة؛ سيتم الاحتفاظ بها ما لم تختر منطقة أخرى أو «بدون منطقة».
+              </p>
+            )}
           </div>
         </div>
 

@@ -74,6 +74,7 @@ export interface NavGroupColorPalette {
 export const NAV_GROUP_COLORS: Record<string, NavGroupColorPalette> = {
   dashboard: { primary: '#2563EB', dark: '#1D4ED8', light: '#DBEAFE' },
   sales: { primary: '#16A34A', dark: '#15803D', light: '#DCFCE7' },
+  delivery: { primary: '#0F766E', dark: '#115E59', light: '#CCFBF1' },
   items: { primary: '#EA580C', dark: '#C2410C', light: '#FFEDD5' },
   warehouses: { primary: '#0284C7', dark: '#0369A1', light: '#E0F2FE' },
   purchases: { primary: '#7C3AED', dark: '#6D28D9', light: '#EDE9FE' },
@@ -223,6 +224,84 @@ export const NAV_GROUPS: NavGroup[] = [
           Boolean(user?.isOwner) ||
           hasPermission(user, 'visitor.display') ||
           hasPermission(user, 'settings.visitor_display')
+      }
+    ]
+  },
+
+  // التوصيل
+  {
+    id: 'delivery',
+    labelAr: 'التوصيل',
+    labelEn: 'Delivery',
+    icon: Truck,
+    permission: (user) =>
+      user?.role === 'designer' ||
+      Boolean(user?.isOwner) ||
+      hasPermission(user, 'delivery.driver') ||
+      hasPermission(user, 'delivery.view') ||
+      hasPermission(user, 'delivery.settle') ||
+      hasPermission(user, 'delivery.reports') ||
+      hasPermission(user, 'delivery.settings'),
+    subItems: [
+      {
+        id: 'delivery-my-orders',
+        page: 'delivery_my_orders',
+        path: '/delivery/my-orders',
+        labelAr: 'طلباتي',
+        labelEn: 'My Delivery Orders',
+        icon: Truck,
+        permission: (user) =>
+          user?.role === 'designer' ||
+          Boolean(user?.isOwner) ||
+          hasPermission(user, 'delivery.driver')
+      },
+      {
+        id: 'delivery-orders',
+        page: 'delivery_orders',
+        path: '/delivery/orders',
+        labelAr: 'إدارة طلبات التوصيل',
+        labelEn: 'Delivery Orders',
+        icon: ClipboardList,
+        permission: (user) =>
+          user?.role === 'designer' ||
+          Boolean(user?.isOwner) ||
+          hasPermission(user, 'delivery.view')
+      },
+      {
+        id: 'delivery-settlements',
+        page: 'delivery_settlements',
+        path: '/delivery/settlements',
+        labelAr: 'التسويات ومستحقات الطيارين',
+        labelEn: 'Delivery Settlements & Payouts',
+        icon: Wallet,
+        permission: (user) =>
+          user?.role === 'designer' ||
+          Boolean(user?.isOwner) ||
+          hasPermission(user, 'delivery.settle')
+      },
+      {
+        id: 'delivery-reports',
+        page: 'delivery_reports',
+        path: '/delivery/reports',
+        labelAr: 'تقارير التوصيل',
+        labelEn: 'Delivery Reports',
+        icon: BarChart3,
+        permission: (user) =>
+          user?.role === 'designer' ||
+          Boolean(user?.isOwner) ||
+          hasPermission(user, 'delivery.reports')
+      },
+      {
+        id: 'delivery-settings',
+        page: 'delivery_settings',
+        path: '/delivery/settings',
+        labelAr: 'إعدادات التوصيل',
+        labelEn: 'Delivery Settings',
+        icon: Settings,
+        permission: (user) =>
+          user?.role === 'designer' ||
+          Boolean(user?.isOwner) ||
+          hasPermission(user, 'delivery.settings')
       }
     ]
   },

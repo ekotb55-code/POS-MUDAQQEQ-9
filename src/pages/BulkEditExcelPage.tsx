@@ -90,6 +90,13 @@ const OPERATION_META_UI: Record<
     buttonLabel: 'إضافة أصناف',
     isAdd: true,
   },
+  add_categories: {
+    label: 'إضافة تصنيفات بالإكسيل',
+    shortColDesc:
+      'عمودان فقط: «التصنيف الرئيسي» (إلزامي) و«التصنيف الفرعي» (اختياري؛ تركه فارغاً يضيف الرئيسي فقط). يمكن تكرار اسم الرئيسي في عدة صفوف لربط أكثر من فرعي به، ولا يُدعم أكثر من مستويين في هذا القالب.',
+    buttonLabel: 'إضافة تصنيفات بالإكسيل',
+    isAdd: true,
+  },
   print_name: {
     label: 'تعديل اسم الطباعة',
     shortColDesc: 'عمودان إلزاميان: «اسم الصنف» و«اسم الطباعة»، وعمود اختياري «الكود/الباركود».',
@@ -181,6 +188,10 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
     user.role === 'designer' ||
     Boolean(user.isOwner) ||
     hasPermission(user, 'items.delete');
+  const canManageCategories =
+    user.role === 'designer' ||
+    Boolean(user.isOwner) ||
+    hasPermission(user, 'categories.manage');
   const canExportItems =
     user.role === 'designer' ||
     Boolean(user.isOwner) ||
@@ -189,6 +200,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
   const [operationType, setOperationType] = useState<PageOperationType>(() => {
     if (initialOperationType && OPERATION_META_UI[initialOperationType]) {
       if (initialOperationType === 'add_items' && !canCreateItems) return 'primary_barcode';
+      if (initialOperationType === 'add_categories' && !canManageCategories) return 'sale_price';
       if (initialOperationType === 'purchase_price' && !canViewPurchase) return 'sale_price';
       if (initialOperationType === 'delete_items' && !canDeleteItems) return 'sale_price';
       return initialOperationType;
@@ -199,11 +211,12 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
   useEffect(() => {
     if (initialOperationType && OPERATION_META_UI[initialOperationType]) {
       if (initialOperationType === 'add_items' && !canCreateItems) return;
+      if (initialOperationType === 'add_categories' && !canManageCategories) return;
       if (initialOperationType === 'purchase_price' && !canViewPurchase) return;
       if (initialOperationType === 'delete_items' && !canDeleteItems) return;
       setOperationType(initialOperationType);
     }
-  }, [initialOperationType, canCreateItems, canViewPurchase, canDeleteItems]);
+  }, [initialOperationType, canCreateItems, canManageCategories, canViewPurchase, canDeleteItems]);
 
   const {
     activeAllowedWarehouses: warehouses,
@@ -301,6 +314,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
   const currentOpMeta = OPERATION_META_UI[operationType] || OPERATION_META_UI.sale_price;
   const operationLabel = currentOpMeta.label;
   const isAddOperation = operationType === 'add_items';
+  const isAddCategoriesOperation = operationType === 'add_categories';
   const isDeleteOperation = operationType === 'delete_items';
   const isImagesOnly = operationType === 'images_only';
   const serverOperationType = operationType as BulkEditOperationType;
@@ -332,6 +346,10 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
     }
     if (nextOp === 'add_items' && !canCreateItems) {
       setErrorMsg('غير مصرح لك بإضافة أصناف جديدة (تفتقر لصلاحية items.create)');
+      return;
+    }
+    if (nextOp === 'add_categories' && !canManageCategories) {
+      setErrorMsg('غير مصرح لك بإضافة التصنيفات (تفتقر لصلاحية categories.manage)');
       return;
     }
     if (nextOp === 'delete_items' && !canDeleteItems) {
@@ -603,6 +621,11 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
         ]);
       } else {
         setErrorMsg(res.error || 'فشل تنفيذ العملية');
+        if (Array.isArray(res.rows) && res.rows.length > 0 && res.summary) {
+          setExecuteResult(res);
+          setPreviewResult(null);
+          setStatusFilter('ALL');
+        }
       }
     } catch (err: any) {
       setIsConfirmModalOpen(false);
@@ -684,46 +707,81 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
     return row.status === statusFilter;
   });
 
+  const categorySummary = activeSummary?.categorySummary;
+
   const summaryRows: ReportSummaryRow[] = activeSummary
-    ? [
-        {
-          label: 'إجمالي الصفوف',
-          value: `${activeSummary.totalRows}`,
-        },
-        {
-          label: executeResult
-            ? isAddOperation
-              ? 'تمت إضافتها بنجاح'
+    ? isAddCategoriesOperation && categorySummary
+      ? [
+          {
+            label: 'إجمالي الصفوف',
+            value: `${activeSummary.totalRows}`,
+          },
+          {
+            label: executeResult ? 'رؤوس جديدة أُضيفت' : 'رؤوس جديدة',
+            value: `${executeResult ? (categorySummary.createdRootsCount ?? categorySummary.newRootsCount) : categorySummary.newRootsCount}`,
+            tone: 'purchase',
+          },
+          {
+            label: 'رؤوس موجودة أُعيد استخدامها',
+            value: `${categorySummary.reusedRootsCount}`,
+          },
+          {
+            label: executeResult ? 'فروع جديدة أُضيفت' : 'فروع جديدة',
+            value: `${executeResult ? (categorySummary.createdSubsCount ?? categorySummary.newSubsCount) : categorySummary.newSubsCount}`,
+            tone: 'purchase',
+          },
+          {
+            label: 'مكررات',
+            value: `${categorySummary.duplicatesCount}`,
+          },
+          {
+            label: executeResult ? 'أخطاء (صفوف مرفوضة/فاشلة)' : 'أخطاء (تُرفض)',
+            value: `${executeResult ? executeResult.errorCount : activeSummary.errorCount}`,
+            valueClassName:
+              (executeResult ? executeResult.errorCount : activeSummary.errorCount) > 0
+                ? 'ui-stock-out'
+                : 'text-[var(--text-primary)]',
+          },
+        ]
+      : [
+          {
+            label: 'إجمالي الصفوف',
+            value: `${activeSummary.totalRows}`,
+          },
+          {
+            label: executeResult
+              ? isAddOperation
+                ? 'تمت إضافتها بنجاح'
+                : isDeleteOperation
+                ? 'تم حذفها نهائيًا'
+                : 'تم تعديلها بنجاح'
+              : isAddOperation
+              ? 'الصفوف الجاهزة للإضافة'
               : isDeleteOperation
-              ? 'تم حذفها نهائيًا'
-              : 'تم تعديلها بنجاح'
-            : isAddOperation
-            ? 'الصفوف الجاهزة للإضافة'
-            : isDeleteOperation
-            ? 'الأصناف الجاهزة للحذف النهائي'
-            : 'الصفوف الجاهزة للتعديل',
-          value: `${executeResult ? executeResult.updatedCount : activeSummary.willUpdateCount}`,
-          tone: isDeleteOperation ? undefined : 'purchase',
-          valueClassName: isDeleteOperation ? 'ui-stock-out' : undefined,
-        },
-        {
-          label: executeResult ? 'صفوف بتنبيهات' : 'صفوف بتنبيهات (تُقبل)',
-          value: `${warningCount}`,
-          valueClassName: warningCount > 0 ? 'ui-stock-low' : 'text-[var(--text-primary)]',
-        },
-        {
-          label: 'بدون تغيير',
-          value: `${executeResult ? executeResult.unchangedCount : activeSummary.unchangedCount}`,
-        },
-        {
-          label: executeResult ? 'صفوف مرفوضة بأخطاء' : 'صفوف بأخطاء (تُرفض)',
-          value: `${executeResult ? executeResult.errorCount : activeSummary.errorCount}`,
-          valueClassName:
-            (executeResult ? executeResult.errorCount : activeSummary.errorCount) > 0
-              ? 'ui-stock-out'
-              : 'text-[var(--text-primary)]',
-        },
-      ]
+              ? 'الأصناف الجاهزة للحذف النهائي'
+              : 'الصفوف الجاهزة للتعديل',
+            value: `${executeResult ? executeResult.updatedCount : activeSummary.willUpdateCount}`,
+            tone: isDeleteOperation ? undefined : 'purchase',
+            valueClassName: isDeleteOperation ? 'ui-stock-out' : undefined,
+          },
+          {
+            label: executeResult ? 'صفوف بتنبيهات' : 'صفوف بتنبيهات (تُقبل)',
+            value: `${warningCount}`,
+            valueClassName: warningCount > 0 ? 'ui-stock-low' : 'text-[var(--text-primary)]',
+          },
+          {
+            label: 'بدون تغيير',
+            value: `${executeResult ? executeResult.unchangedCount : activeSummary.unchangedCount}`,
+          },
+          {
+            label: executeResult ? 'صفوف مرفوضة بأخطاء' : 'صفوف بأخطاء (تُرفض)',
+            value: `${executeResult ? executeResult.errorCount : activeSummary.errorCount}`,
+            valueClassName:
+              (executeResult ? executeResult.errorCount : activeSummary.errorCount) > 0
+                ? 'ui-stock-out'
+                : 'text-[var(--text-primary)]',
+          },
+        ]
     : [];
 
   return (
@@ -800,6 +858,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                 className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs font-bold cursor-pointer disabled:opacity-60`}
               >
                 {canCreateItems && <option value="add_items">إضافة أصناف</option>}
+                {canManageCategories && <option value="add_categories">إضافة تصنيفات بالإكسيل</option>}
                 <option value="print_name">تعديل اسم الطباعة</option>
                 <option value="primary_barcode">تعديل الباركود الرئيسي</option>
                 <option value="add_secondary_barcode">إضافة باركود فرعي</option>
@@ -909,7 +968,9 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
               <strong className="text-[var(--text-primary)]">الأعمدة المطلوبة: </strong>
               {currentOpMeta.shortColDesc}{' '}
               <span>
-                {isAddOperation || isImagesOnly
+                {isAddCategoriesOperation
+                  ? '(النموذج فيه ورقة «التصنيفات» بصف العناوين فقط، وورقة «مثال وتعليمات» فيها مثال للرئيسي وحده ورئيسي تحته عدة فروع، والحد الأقصى 5000 صف.)'
+                  : isAddOperation || isImagesOnly
                   ? '(النموذج فيه ورقة بصف العناوين بس، وورقة «مثال وتعليمات» فيها الأمثلة والشرح، والحد الأقصى 5000 صف.)'
                   : '(الصف الأول عناوين عربية، والصف الثاني مثال توضيحي، والحد الأقصى 5000 صف.)'}
               </span>
@@ -1091,7 +1152,9 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                   >
                     {isDeleteOperation ? <Trash2 className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
                     <span>
-                      {isAddOperation
+                      {isAddCategoriesOperation
+                        ? `تنفيذ إضافة التصنيفات (${activeSummary.willUpdateCount})`
+                        : isAddOperation
                         ? `تنفيذ الإضافة (${activeSummary.willUpdateCount})`
                         : isDeleteOperation
                         ? `تنفيذ الحذف النهائي (${activeSummary.willUpdateCount})`
@@ -1107,6 +1170,29 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
             <div className="text-xs text-[var(--text-secondary)]">
               رقم الدفعة: <span className="font-mono font-bold text-[var(--text-primary)]">{executeResult.batchId}</span>
               {executeResult.fileName ? ` • الملف: ${executeResult.fileName}` : ''}
+            </div>
+          )}
+
+          {executeResult?.partialSuccess && (
+            <div
+              role="alert"
+              className="p-3.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-xs font-bold ui-stock-low flex items-center gap-2"
+            >
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>
+                {executeResult.message ||
+                  `حفظ جزئي: تمت إضافة ${executeResult.updatedCount} صف وتعذر حفظ ${executeResult.errorCount} صف — راجع تفاصيل الصفوف أدناه أو حمّل ملف الأخطاء.`}
+              </span>
+            </div>
+          )}
+
+          {executeResult && isAddCategoriesOperation && executeResult.success && !executeResult.partialSuccess && executeResult.message && (
+            <div
+              role="status"
+              className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-xs font-bold ui-money-purchase flex items-center gap-2"
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{executeResult.message}</span>
             </div>
           )}
 
@@ -1193,7 +1279,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
               <Info className="w-4 h-4 shrink-0" />
               <span>
                 وجود {activeSummary.errorCount} صف به أخطاء لن يمنع{' '}
-                {isAddOperation ? 'إضافة' : isDeleteOperation ? 'حذف' : 'تعديل'} الصفوف الصالحة ({activeSummary.willUpdateCount} صف)،
+                {isAddOperation || isAddCategoriesOperation ? 'إضافة' : isDeleteOperation ? 'حذف' : 'تعديل'} الصفوف الصالحة ({activeSummary.willUpdateCount} صف)،
                 ويمكنك تحميل ملف الأخطاء لإصلاحها وإعادة رفعها.
               </span>
             </div>
@@ -1224,12 +1310,12 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
               }`}
             >
               {executeResult
-                ? isAddOperation
+                ? isAddOperation || isAddCategoriesOperation
                   ? 'تمت إضافته'
                   : isDeleteOperation
                   ? 'تم الحذف نهائيًا'
                   : 'تم تعديله'
-                : isAddOperation
+                : isAddOperation || isAddCategoriesOperation
                 ? 'جاهز للإضافة'
                 : isDeleteOperation
                 ? 'سيُحذف نهائيًا'
@@ -1258,7 +1344,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                   : 'border border-[var(--border-color)] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]'
               }`}
             >
-              بدون تغيير ({activeSummary.unchangedCount})
+              {isAddCategoriesOperation ? 'مكرر / موجود مسبقاً' : 'بدون تغيير'} ({activeSummary.unchangedCount})
             </button>
             <button
               type="button"
@@ -1277,18 +1363,29 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
 
           <CompactTable ariaLabel="جدول معاينة وتفاصيل ملف الإكسيل">
             <thead>
-              <tr>
-                <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الصف</th>
-                <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>اسم الصنف</th>
-                <th className={`text-right ${COMPACT_TABLE_NUM_CLASS}`}>
-                  {isAddOperation ? 'النوع' : 'القيمة الحالية'}
-                </th>
-                <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>
-                  {isAddOperation ? 'بيانات الصنف المضاف' : isDeleteOperation ? 'الإجراء' : 'القيمة الجديدة'}
-                </th>
-                <th className={`text-right ${COMPACT_TABLE_NUM_CLASS}`}>الحالة</th>
-                <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التنبيهات / سبب الرفض</th>
-              </tr>
+              {isAddCategoriesOperation ? (
+                <tr>
+                  <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الصف</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التصنيف الرئيسي</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التصنيف الفرعي</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>الإجراء</th>
+                  <th className={`text-right ${COMPACT_TABLE_NUM_CLASS}`}>الحالة</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التفاصيل / سبب الرفض</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الصف</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>اسم الصنف</th>
+                  <th className={`text-right ${COMPACT_TABLE_NUM_CLASS}`}>
+                    {isAddOperation ? 'النوع' : 'القيمة الحالية'}
+                  </th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>
+                    {isAddOperation ? 'بيانات الصنف المضاف' : isDeleteOperation ? 'الإجراء' : 'القيمة الجديدة'}
+                  </th>
+                  <th className={`text-right ${COMPACT_TABLE_NUM_CLASS}`}>الحالة</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التنبيهات / سبب الرفض</th>
+                </tr>
+              )}
             </thead>
             <tbody>
               {filteredRows.length === 0 ? (
@@ -1297,6 +1394,69 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                     لا توجد صفوف مطابقة لهذا التصنيف
                   </td>
                 </tr>
+              ) : isAddCategoriesOperation ? (
+                filteredRows.map((row) => (
+                  <tr key={`${row.rowNumber}-${row.mainCategoryName || row.inputName}-${row.subCategoryName || ''}`}>
+                    <td className={`text-center font-mono font-bold text-[var(--text-secondary)] ${COMPACT_TABLE_NUM_CLASS}`}>
+                      {row.rowNumber}
+                    </td>
+                    <td className={COMPACT_TABLE_TEXT_CLASS}>
+                      <div className="font-bold text-[var(--text-primary)]">
+                        {row.mainCategoryName || row.inputName || '—'}
+                      </div>
+                    </td>
+                    <td className={COMPACT_TABLE_TEXT_CLASS}>
+                      {row.subCategoryName ? (
+                        <span className="font-semibold text-[var(--text-primary)]">{row.subCategoryName}</span>
+                      ) : (
+                        <span className="text-xs text-[var(--text-secondary)]">— (رئيسي فقط)</span>
+                      )}
+                    </td>
+                    <td className={`font-bold ${COMPACT_TABLE_TEXT_CLASS}`}>
+                      <div
+                        className={
+                          row.status === 'will_update'
+                            ? 'ui-money-purchase'
+                            : row.status === 'error'
+                            ? 'ui-stock-out'
+                            : 'text-[var(--text-primary)]'
+                        }
+                      >
+                        {row.newValueDisplay || '—'}
+                      </div>
+                      {row.currentValueDisplay && (
+                        <div className="text-[11px] font-normal text-[var(--text-secondary)] mt-0.5">
+                          {row.currentValueDisplay}
+                        </div>
+                      )}
+                    </td>
+                    <td className={COMPACT_TABLE_NUM_CLASS}>
+                      {row.status === 'will_update' && (
+                        <span className="font-bold ui-money-purchase">
+                          {executeResult ? 'تمت الإضافة' : 'جاهز للإضافة'}
+                        </span>
+                      )}
+                      {row.status === 'unchanged' && (
+                        <span className="font-bold text-[var(--text-secondary)]">مكرر / موجود</span>
+                      )}
+                      {row.status === 'error' && (
+                        <span className="font-bold ui-stock-out">مرفوض</span>
+                      )}
+                    </td>
+                    <td className={`text-xs ${COMPACT_TABLE_TEXT_CLASS}`}>
+                      {row.reason && (
+                        <div className={row.status === 'error' ? 'ui-stock-out font-bold' : 'text-[var(--text-secondary)] font-semibold'}>
+                          {row.reason}
+                        </div>
+                      )}
+                      {!row.reason && row.status === 'will_update' && (
+                        <span className="font-medium ui-money-purchase">
+                          {executeResult ? 'تم الحفظ بنجاح' : row.currentValueDisplay || 'جاهز للإضافة'}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))
               ) : (
                 filteredRows.map((row) => (
                   <tr key={`${row.rowNumber}-${row.itemId || row.inputName}`}>
@@ -1392,7 +1552,9 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
       {isConfirmModalOpen && activeSummary && (
         <ModalShell
           title={
-            isAddOperation
+            isAddCategoriesOperation
+              ? 'تأكيد إضافة التصنيفات بالإكسيل'
+              : isAddOperation
               ? 'تأكيد إضافة الأصناف'
               : isDeleteOperation
               ? 'تأكيد الحذف النهائي للأصناف'
@@ -1438,7 +1600,9 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                   <>
                     {isDeleteOperation ? <Trash2 className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
                     <span>
-                      {isAddOperation
+                      {isAddCategoriesOperation
+                        ? 'تأكيد وإضافة التصنيفات'
+                        : isAddOperation
                         ? imagePlan
                           ? 'تأكيد الاستيراد'
                           : 'تأكيد وإضافة الأصناف'
@@ -1459,85 +1623,117 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                 {selectedFileName}
               </span>
             </div>
-            {activeWarehouseName && (
-              <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
-                <span className="text-[var(--text-secondary)] font-semibold">المخزن المحدد:</span>
-                <span className="font-bold text-[var(--text-primary)]">{activeWarehouseName}</span>
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
-              <span className="text-[var(--text-secondary)] font-semibold">
-                {isAddOperation
-                  ? 'عدد الأصناف التي ستُضاف:'
-                  : isDeleteOperation
-                  ? 'عدد الأصناف التي ستُحذف نهائيًا:'
-                  : 'عدد الأصناف التي ستُعدَّل:'}
-              </span>
-              <span className={`font-bold ${isDeleteOperation ? 'ui-stock-out' : 'ui-money-purchase'}`}>
-                {activeSummary.willUpdateCount} صنف
-              </span>
-            </div>
-            {warningCount > 0 && (
-              <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
-                <span className="ui-stock-low font-semibold">أصناف بتنبيهات:</span>
-                <span className="font-bold ui-stock-low">{warningCount} صنف</span>
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
-              <span className="text-[var(--text-secondary)] font-semibold">صفوف بدون تغيير:</span>
-              <span className="font-bold">{activeSummary.unchangedCount}</span>
-            </div>
-            {activeSummary.errorCount > 0 && (
-              <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
-                <span className="text-[var(--text-secondary)] font-semibold">صفوف مرفوضة (لن تُنفَّذ):</span>
-                <span className="font-bold ui-stock-out">{activeSummary.errorCount}</span>
-              </div>
-            )}
-            {isAddOperation && imagePlan && (
-              <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
-                <span className="text-[var(--text-secondary)] font-semibold">صور هتترفع بعد حفظ الأصناف:</span>
-                <span className="font-bold">
-                  {imagesStorageEnabled === false
-                    ? 'تخزين الصور مش مفعّل'
-                    : imagePlan.entries.filter((en) => en.image && !en.problem).length.toLocaleString('en-US')}
-                </span>
-              </div>
-            )}
-            {isDeleteOperation ? (
-              <div className="space-y-3 pt-2">
-                <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/10 ui-stock-out font-bold leading-relaxed">
-                  الحذف نهائي ولا يمكن التراجع عنه. سيتم مسح {activeSummary.willUpdateCount} صنف مع باركوداتها وأرصدة مخازنها وتكاليفها وسجلاتها من النظام بالكامل.
+            {isAddCategoriesOperation && categorySummary ? (
+              <>
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">رؤوس جديدة:</span>
+                  <span className="font-bold ui-money-purchase">{categorySummary.newRootsCount}</span>
                 </div>
-                <div className="space-y-1.5">
-                  <label
-                    htmlFor="bulk-delete-confirm-count"
-                    className="block font-bold text-[var(--text-primary)]"
-                  >
-                    للتأكيد، اكتب عدد الأصناف المقرر حذفها ({activeSummary.willUpdateCount}):
-                  </label>
-                  <input
-                    id="bulk-delete-confirm-count"
-                    type="text"
-                    inputMode="numeric"
-                    value={deleteConfirmCountInput}
-                    onChange={(e) => setDeleteConfirmCountInput(e.target.value)}
-                    placeholder={`اكتب ${activeSummary.willUpdateCount}`}
-                    disabled={isExecuting}
-                    className={`${FORM_CONTROL_BASE_CLASS} w-full font-mono font-bold text-center`}
-                    autoFocus
-                  />
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">رؤوس موجودة أُعيد استخدامها:</span>
+                  <span className="font-bold text-[var(--text-primary)]">{categorySummary.reusedRootsCount}</span>
                 </div>
-              </div>
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">فروع جديدة:</span>
+                  <span className="font-bold ui-money-purchase">{categorySummary.newSubsCount}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">مكررات (لن تُكرَّر أو تُعدَّل):</span>
+                  <span className="font-bold">{categorySummary.duplicatesCount}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">أخطاء (لن تُنفَّذ):</span>
+                  <span className={`font-bold ${activeSummary.errorCount > 0 ? 'ui-stock-out' : 'text-[var(--text-primary)]'}`}>
+                    {activeSummary.errorCount}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--text-secondary)] leading-relaxed pt-2">
+                  سيتم إنشاء كل تصنيف رئيسي جديد مرة واحدة وربط التصنيفات الفرعية به عبر مسار إنشاء التصنيفات المعتمد، دون حذف أو إعادة تسمية أي تصنيفات حالية أو تغيير ربط الأصناف.
+                </p>
+              </>
             ) : (
-              <p className="text-xs text-[var(--text-secondary)] leading-relaxed pt-2">
-                {isAddOperation
-                  ? `سيتم إضافة ${activeSummary.willUpdateCount} صنف جديد وتسجيل كمياتها كرصيد افتتاحي بالإكسيل في مخزن «${
-                      activeWarehouseName || 'المخزن الرئيسي'
-                    }» مع توثيق العملية في سجل التدقيق.`
-                  : `سيتم تطبيق «${operationLabel}» على ${activeSummary.willUpdateCount} صنف${
-                      activeWarehouseName ? ` في مخزن «${activeWarehouseName}»` : ''
-                    } دون المساس بأي فواتير مسجلة سابقاً.`}
-              </p>
+              <>
+                {activeWarehouseName && (
+                  <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                    <span className="text-[var(--text-secondary)] font-semibold">المخزن المحدد:</span>
+                    <span className="font-bold text-[var(--text-primary)]">{activeWarehouseName}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">
+                    {isAddOperation
+                      ? 'عدد الأصناف التي ستُضاف:'
+                      : isDeleteOperation
+                      ? 'عدد الأصناف التي ستُحذف نهائيًا:'
+                      : 'عدد الأصناف التي ستُعدَّل:'}
+                  </span>
+                  <span className={`font-bold ${isDeleteOperation ? 'ui-stock-out' : 'ui-money-purchase'}`}>
+                    {activeSummary.willUpdateCount} صنف
+                  </span>
+                </div>
+                {warningCount > 0 && (
+                  <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                    <span className="ui-stock-low font-semibold">أصناف بتنبيهات:</span>
+                    <span className="font-bold ui-stock-low">{warningCount} صنف</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">صفوف بدون تغيير:</span>
+                  <span className="font-bold">{activeSummary.unchangedCount}</span>
+                </div>
+                {activeSummary.errorCount > 0 && (
+                  <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                    <span className="text-[var(--text-secondary)] font-semibold">صفوف مرفوضة (لن تُنفَّذ):</span>
+                    <span className="font-bold ui-stock-out">{activeSummary.errorCount}</span>
+                  </div>
+                )}
+                {isAddOperation && imagePlan && (
+                  <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                    <span className="text-[var(--text-secondary)] font-semibold">صور هتترفع بعد حفظ الأصناف:</span>
+                    <span className="font-bold">
+                      {imagesStorageEnabled === false
+                        ? 'تخزين الصور مش مفعّل'
+                        : imagePlan.entries.filter((en) => en.image && !en.problem).length.toLocaleString('en-US')}
+                    </span>
+                  </div>
+                )}
+                {isDeleteOperation ? (
+                  <div className="space-y-3 pt-2">
+                    <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/10 ui-stock-out font-bold leading-relaxed">
+                      الحذف نهائي ولا يمكن التراجع عنه. سيتم مسح {activeSummary.willUpdateCount} صنف مع باركوداتها وأرصدة مخازنها وتكاليفها وسجلاتها من النظام بالكامل.
+                    </div>
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="bulk-delete-confirm-count"
+                        className="block font-bold text-[var(--text-primary)]"
+                      >
+                        للتأكيد، اكتب عدد الأصناف المقرر حذفها ({activeSummary.willUpdateCount}):
+                      </label>
+                      <input
+                        id="bulk-delete-confirm-count"
+                        type="text"
+                        inputMode="numeric"
+                        value={deleteConfirmCountInput}
+                        onChange={(e) => setDeleteConfirmCountInput(e.target.value)}
+                        placeholder={`اكتب ${activeSummary.willUpdateCount}`}
+                        disabled={isExecuting}
+                        className={`${FORM_CONTROL_BASE_CLASS} w-full font-mono font-bold text-center`}
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed pt-2">
+                    {isAddOperation
+                      ? `سيتم إضافة ${activeSummary.willUpdateCount} صنف جديد وتسجيل كمياتها كرصيد افتتاحي بالإكسيل في مخزن «${
+                          activeWarehouseName || 'المخزن الرئيسي'
+                        }» مع توثيق العملية في سجل التدقيق.`
+                      : `سيتم تطبيق «${operationLabel}» على ${activeSummary.willUpdateCount} صنف${
+                          activeWarehouseName ? ` في مخزن «${activeWarehouseName}»` : ''
+                        } دون المساس بأي فواتير مسجلة سابقاً.`}
+                  </p>
+                )}
+              </>
             )}
           </div>
         </ModalShell>

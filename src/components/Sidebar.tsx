@@ -131,6 +131,7 @@ function hexToRgba(hex: string, alpha: number): string {
 const ICON_FILL_MODE_BY_GROUP: Record<string, string> = {
   dashboard: 'all',
   sales: 'none',
+  delivery: 'first-path',
   items: 'first-path',
   warehouses: 'first-path',
   purchases: 'last-path',
@@ -154,7 +155,12 @@ const OFFLINE_DISABLED_PAGES = new Set<PageType>([
   'warehouses',
   'warehouse_transfers',
   'warehouse_excel_transfer',
-  'warehouse_dispatch_orders'
+  'warehouse_dispatch_orders',
+  'delivery_settings',
+  'delivery_orders',
+  'delivery_settlements',
+  'delivery_my_orders',
+  'delivery_reports'
 ]);
 
 interface SidebarProps {

@@ -5,7 +5,10 @@ import {
   TaxSettings,
   Customer,
   Cashbox,
-  Warehouse
+  Warehouse,
+  DeliveryConfigResponse,
+  DeliveryPaymentMode,
+  DeliveryAssigneeType
 } from '../../types';
 import { api } from '../../api/client';
 import {
@@ -172,6 +175,35 @@ export interface PosInvoicePanelProps {
   onPlatformOrderIdChange?: (val: string) => void;
   platformOrderError?: boolean;
   platformAlwaysCredit?: boolean;
+
+  // Direct Sale Delivery (shown only when saleMode === 'customer' && deliveryConfig?.settings.enabled)
+  deliveryConfig?: DeliveryConfigResponse | null;
+  isDeliveryEnabled?: boolean;
+  onDeliveryEnabledChange?: (enabled: boolean) => void;
+  deliveryPaymentMode?: DeliveryPaymentMode;
+  onDeliveryPaymentModeChange?: (mode: DeliveryPaymentMode) => void;
+  deliveryZoneId?: string;
+  onDeliveryZoneIdChange?: (zoneId: string) => void;
+  deliveryAddress?: string;
+  onDeliveryAddressChange?: (address: string) => void;
+  deliveryPhone?: string;
+  onDeliveryPhoneChange?: (phone: string) => void;
+  deliveryOrderFeeInput?: number | '';
+  onDeliveryOrderFeeChange?: (val: number | '') => void;
+  deliveryFeeManual?: boolean;
+  onResetDeliveryFeeToComputed?: () => void;
+  computedDeliveryFee?: number;
+  effectiveDeliveryOrderFee?: number;
+  canEditDeliveryFee?: boolean;
+  deliveryZoneWarning?: string | null;
+  deliveryAssigneeType?: '' | DeliveryAssigneeType;
+  onDeliveryAssigneeTypeChange?: (type: '' | DeliveryAssigneeType) => void;
+  deliveryAssigneeId?: string;
+  onDeliveryAssigneeIdChange?: (id: string) => void;
+  deliveryTrackingNumber?: string;
+  onDeliveryTrackingNumberChange?: (tracking: string) => void;
+  deliveryAddressError?: boolean;
+  deliveryZoneError?: boolean;
 }
 
 function readBooleanPref(storageKey: string, defaultVal: boolean): boolean {
@@ -288,7 +320,35 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
   platformOrderId = '',
   onPlatformOrderIdChange,
   platformOrderError = false,
-  platformAlwaysCredit = false
+  platformAlwaysCredit = false,
+
+  deliveryConfig = null,
+  isDeliveryEnabled = false,
+  onDeliveryEnabledChange,
+  deliveryPaymentMode = 'prepaid',
+  onDeliveryPaymentModeChange,
+  deliveryZoneId = '',
+  onDeliveryZoneIdChange,
+  deliveryAddress = '',
+  onDeliveryAddressChange,
+  deliveryPhone = '',
+  onDeliveryPhoneChange,
+  deliveryOrderFeeInput = 0,
+  onDeliveryOrderFeeChange,
+  deliveryFeeManual = false,
+  onResetDeliveryFeeToComputed,
+  computedDeliveryFee = 0,
+  effectiveDeliveryOrderFee = 0,
+  canEditDeliveryFee = false,
+  deliveryZoneWarning = null,
+  deliveryAssigneeType = '',
+  onDeliveryAssigneeTypeChange,
+  deliveryAssigneeId = '',
+  onDeliveryAssigneeIdChange,
+  deliveryTrackingNumber = '',
+  onDeliveryTrackingNumberChange,
+  deliveryAddressError = false,
+  deliveryZoneError = false
 }) => {
   // Today's date formatted as YYYY/MM/DD
   const todayFormatted = useMemo(() => {
@@ -410,22 +470,51 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
     return cart.reduce((sum, c) => sum + c.quantity, 0);
   }, [cart]);
 
+  // Direct-sale delivery derived state
+  const isDeliveryFeatureAvailable = saleMode === 'customer' && Boolean(deliveryConfig?.settings.enabled);
+  const isDeliveryOrderActive = isDeliveryFeatureAvailable && !isOffline && Boolean(isDeliveryEnabled);
+  const isCodDelivery = isDeliveryOrderActive && deliveryPaymentMode === 'cod';
+  const selectedDeliveryZone = useMemo(() => {
+    if (!deliveryConfig?.zones || !deliveryZoneId) return null;
+    return deliveryConfig.zones.find(z => z.id === deliveryZoneId) || null;
+  }, [deliveryConfig?.zones, deliveryZoneId]);
+  const isDeliveryBelowMinOrder = Boolean(
+    isDeliveryOrderActive &&
+      deliveryConfig?.settings.zonePricing &&
+      selectedDeliveryZone &&
+      selectedDeliveryZone.minOrderValue > 0 &&
+      cart.length > 0 &&
+      totalBeforeDiscount + 0.001 < selectedDeliveryZone.minOrderValue
+  );
+  const deliveryMode = deliveryConfig?.settings.mode || 'drivers';
+  const availableDrivers = deliveryConfig?.drivers || [];
+  const availableCouriers = deliveryConfig?.couriers || [];
+  const hasAnyDeliveryAssigneeOptions =
+    (deliveryMode === 'drivers' && availableDrivers.length > 0) ||
+    (deliveryMode === 'couriers' && availableCouriers.length > 0) ||
+    (deliveryMode === 'both' && (availableDrivers.length > 0 || availableCouriers.length > 0));
+
   // Numeric paid amount
   const numericPaid = parseFloat(paidAmountInput) || 0;
   const changeToCustomer = numericPaid - netAmount;
-  const grossInvoiceTotal = Math.round((totalBeforeDiscount + (enableDeliveryFee ? Number(deliveryFee || 0) : 0)) * 100) / 100;
+  const activeDeliveryFeeAmount = isDeliveryOrderActive
+    ? Number(effectiveDeliveryOrderFee || 0)
+    : (enableDeliveryFee ? Number(deliveryFee || 0) : 0);
+  const grossInvoiceTotal = Math.round((totalBeforeDiscount + activeDeliveryFeeAmount) * 100) / 100;
   const effectiveCreditParty: 'customer' | 'platform' =
     saleMode === 'platform' ? 'platform' : (saleMode === 'customer' ? 'customer' : creditPartyType);
-  const creditDueAmount = paymentType === 'آجل'
+  const creditDueAmount = isCodDelivery
+    ? netAmount
+    : paymentType === 'آجل'
     ? (effectiveCreditParty === 'customer' ? grossInvoiceTotal : netAmount)
     : Math.max(0, netAmount - numericPaid);
   const remainingCredit = creditDueAmount;
 
-  const isCashPaidReadOnly = paymentType === 'آجل' || (paymentType === 'نقدي' && !canEditCashPaid);
-  const showCashPaidInput = paymentType === 'نقدي' || paymentType === 'جزئي';
-  const showCashboxSelector = paymentType !== 'آجل' && allowedSaleCashboxes.length > 1;
-  const showCashboxMissingWarning = paymentType !== 'آجل' && allowedSaleCashboxes.length === 0;
-  const showDenominations = paymentType === 'نقدي' && canEditCashPaid;
+  const isCashPaidReadOnly = isCodDelivery || paymentType === 'آجل' || (paymentType === 'نقدي' && !canEditCashPaid);
+  const showCashPaidInput = !isCodDelivery && (paymentType === 'نقدي' || paymentType === 'جزئي');
+  const showCashboxSelector = !isCodDelivery && paymentType !== 'آجل' && allowedSaleCashboxes.length > 1;
+  const showCashboxMissingWarning = !isCodDelivery && paymentType !== 'آجل' && allowedSaleCashboxes.length === 0;
+  const showDenominations = !isCodDelivery && paymentType === 'نقدي' && canEditCashPaid;
 
   const resolvedCommissionPct =
     commissionPercentInput !== undefined && commissionPercentInput !== ''
@@ -862,6 +951,349 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
               </span>
             </div>
           </div>
+
+          {/* خيار التوصيل: يظهر فقط في البيع المباشر وعند تفعيل التوصيل من إعدادات التوصيل */}
+          {isDeliveryFeatureAvailable && (
+            <div className="pt-3 mt-2 border-t border-slate-200 space-y-3" data-testid="pos-delivery-section">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Truck className="w-4 h-4 text-[#1678C2] shrink-0" />
+                  <span className="text-xs font-extrabold text-slate-900">توصيل</span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isDeliveryOrderActive}
+                  aria-label="تفعيل التوصيل لهذه الفاتورة"
+                  disabled={isOffline}
+                  onClick={() => {
+                    if (isOffline) return;
+                    onDeliveryEnabledChange?.(!isDeliveryEnabled);
+                  }}
+                  className={`min-h-[44px] px-3 rounded-lg border text-xs font-bold inline-flex items-center gap-2 transition ${
+                    isOffline
+                      ? 'bg-slate-100 border-slate-300 text-slate-400 cursor-not-allowed opacity-70'
+                      : isDeliveryOrderActive
+                      ? 'bg-[#1678C2] border-[#1678C2] text-white cursor-pointer'
+                      : 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200 cursor-pointer'
+                  }`}
+                >
+                  <span>{isDeliveryOrderActive ? 'مفعّل' : 'بدون توصيل'}</span>
+                  <span
+                    className={`w-4 h-4 rounded-full bg-white shadow-2xs transition-transform ${
+                      isDeliveryOrderActive ? '-translate-x-0.5' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {isOffline && (
+                <div className="text-[11px] font-bold text-amber-700">
+                  التوصيل متاح عند رجوع الاتصال فقط
+                </div>
+              )}
+
+              {isDeliveryOrderActive && (
+                <div className="space-y-3 text-xs pt-1">
+                  {/* طريقة دفع التوصيل */}
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-800 block">
+                      طريقة دفع التوصيل:
+                    </label>
+                    <div
+                      role="group"
+                      aria-label="طريقة دفع التوصيل"
+                      className="grid grid-cols-2 gap-1.5 p-0.5 rounded-lg border border-slate-300 bg-slate-100 pos-mode-toggle-track"
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={deliveryPaymentMode === 'prepaid'}
+                        onClick={() => onDeliveryPaymentModeChange?.('prepaid')}
+                        className={`min-h-[44px] px-2.5 rounded-md text-xs font-bold transition cursor-pointer ${
+                          deliveryPaymentMode === 'prepaid'
+                            ? 'bg-[#1678C2] text-white shadow-2xs'
+                            : 'text-slate-700 hover:text-slate-900 pos-mode-toggle-inactive'
+                        }`}
+                      >
+                        مدفوع مقدمًا
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={deliveryPaymentMode === 'cod'}
+                        onClick={() => onDeliveryPaymentModeChange?.('cod')}
+                        className={`min-h-[44px] px-2.5 rounded-md text-xs font-bold transition cursor-pointer ${
+                          deliveryPaymentMode === 'cod'
+                            ? 'bg-[#1678C2] text-white shadow-2xs'
+                            : 'text-slate-700 hover:text-slate-900 pos-mode-toggle-inactive'
+                        }`}
+                      >
+                        الدفع عند الاستلام
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* منطقة التوصيل (تظهر فقط عند تفعيل التسعير بالمناطق) */}
+                  {deliveryConfig?.settings.zonePricing && (
+                    <div className="space-y-1">
+                      <label htmlFor="pos-delivery-zone" className="text-[11px] font-bold text-slate-800 block">
+                        منطقة التوصيل *:
+                      </label>
+                      <select
+                        id="pos-delivery-zone"
+                        value={deliveryZoneId}
+                        onChange={(e) => onDeliveryZoneIdChange?.(e.target.value)}
+                        aria-invalid={deliveryZoneError}
+                        className={`w-full min-h-[44px] px-3 py-2 text-xs font-bold rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
+                          deliveryZoneError
+                            ? 'border-rose-500 ring-2 ring-rose-300 focus:ring-rose-500'
+                            : 'border-slate-300 focus:ring-blue-500'
+                        }`}
+                      >
+                        <option value="">-- اختر منطقة التوصيل --</option>
+                        {(deliveryConfig?.zones || []).map(z => (
+                          <option key={z.id} value={z.id}>
+                            {z.name} — {Number(z.customerFee || 0).toFixed(2)} ج.م
+                            {z.minOrderValue > 0 ? ` (حد أدنى ${Number(z.minOrderValue).toFixed(2)} ج.م)` : ''}
+                          </option>
+                        ))}
+                      </select>
+
+                      {deliveryZoneWarning && (
+                        <p className="text-[11px] font-bold text-amber-800">
+                          {deliveryZoneWarning}
+                        </p>
+                      )}
+
+                      {selectedDeliveryZone && selectedDeliveryZone.minOrderValue > 0 && (
+                        <p
+                          className={`text-[11px] font-bold ${
+                            isDeliveryBelowMinOrder ? 'text-rose-700' : 'text-slate-600'
+                          }`}
+                        >
+                          {isDeliveryBelowMinOrder
+                            ? `أقل قيمة طلب لمنطقة «${selectedDeliveryZone.name}» هي ${selectedDeliveryZone.minOrderValue.toFixed(2)} ج.م (قيمة الأصناف الحالية ${totalBeforeDiscount.toFixed(2)} ج.م)`
+                            : `الحد الأدنى للطلب في هذه المنطقة: ${selectedDeliveryZone.minOrderValue.toFixed(2)} ج.م`}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* عنوان التوصيل وموبايل التوصيل */}
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <label htmlFor="pos-delivery-address" className="text-[11px] font-bold text-slate-800 block">
+                        عنوان التوصيل *:
+                      </label>
+                      <input
+                        id="pos-delivery-address"
+                        type="text"
+                        value={deliveryAddress}
+                        onChange={(e) => onDeliveryAddressChange?.(e.target.value)}
+                        placeholder="اكتب عنوان التوصيل بالتفصيل..."
+                        aria-invalid={deliveryAddressError}
+                        className={`w-full min-h-[44px] px-3 py-2 text-xs rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
+                          deliveryAddressError
+                            ? 'border-rose-500 ring-2 ring-rose-300 focus:ring-rose-500'
+                            : 'border-slate-300 focus:ring-blue-500'
+                        }`}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label htmlFor="pos-delivery-phone" className="text-[11px] font-bold text-slate-800 block">
+                          موبايل التوصيل:
+                        </label>
+                        <input
+                          id="pos-delivery-phone"
+                          type="text"
+                          maxLength={30}
+                          dir="ltr"
+                          value={deliveryPhone}
+                          onChange={(e) => onDeliveryPhoneChange?.(e.target.value)}
+                          placeholder="رقم للتواصل عند التوصيل"
+                          className="w-full min-h-[44px] px-3 py-2 text-xs font-mono text-right rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+
+                      {/* رسوم التوصيل */}
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="pos-delivery-fee-input"
+                          className="text-[11px] font-bold text-slate-800 flex items-center justify-between gap-1"
+                        >
+                          <span>رسوم التوصيل (ج.م):</span>
+                          {!canEditDeliveryFee && (
+                            <span
+                              title="تعديل رسوم التوصيل يتطلب صلاحية تعديل رسوم التوصيل (delivery.edit_fee)"
+                              className="inline-flex cursor-help"
+                            >
+                              <Lock className="w-3 h-3 text-slate-400 shrink-0" />
+                            </span>
+                          )}
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            id="pos-delivery-fee-input"
+                            type="number"
+                            min="0"
+                            step="any"
+                            readOnly={!canEditDeliveryFee}
+                            value={canEditDeliveryFee ? deliveryOrderFeeInput : Number(computedDeliveryFee || 0).toFixed(2)}
+                            onChange={(e) => {
+                              if (!canEditDeliveryFee) return;
+                              const val = e.target.value;
+                              if (val === '') {
+                                onDeliveryOrderFeeChange?.('');
+                                return;
+                              }
+                              const num = Number(val);
+                              if (!isNaN(num) && num >= 0) {
+                                onDeliveryOrderFeeChange?.(num);
+                              }
+                            }}
+                            className={`w-full min-h-[44px] px-2.5 py-2 text-xs font-mono font-bold text-center rounded-lg border tabular-nums focus:outline-none ${
+                              canEditDeliveryFee
+                                ? 'bg-white border-slate-300 text-slate-900 focus:ring-2 focus:ring-blue-500'
+                                : 'bg-slate-100 border-slate-300 text-slate-700 cursor-not-allowed select-none'
+                            }`}
+                          />
+                          {canEditDeliveryFee && deliveryFeeManual && (
+                            <button
+                              type="button"
+                              onClick={() => onResetDeliveryFeeToComputed?.()}
+                              className="min-h-[44px] px-2.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 text-[11px] font-bold transition cursor-pointer shrink-0"
+                              title={`إرجاع للرسوم المحسوبة (${Number(computedDeliveryFee || 0).toFixed(2)} ج.م)`}
+                            >
+                              الافتراضي
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* تعيين اختياري (طيار / شركة شحن) حسب وضع التشغيل */}
+                  {hasAnyDeliveryAssigneeOptions && (
+                    <div className="space-y-2 pt-1 border-t border-slate-100">
+                      {deliveryMode === 'both' ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div className="space-y-1">
+                            <label htmlFor="pos-delivery-assignee-type" className="text-[11px] font-bold text-slate-800 block">
+                              التعيين (اختياري):
+                            </label>
+                            <select
+                              id="pos-delivery-assignee-type"
+                              value={deliveryAssigneeType}
+                              onChange={(e) => {
+                                const nextType = e.target.value as '' | DeliveryAssigneeType;
+                                onDeliveryAssigneeTypeChange?.(nextType);
+                                onDeliveryAssigneeIdChange?.('');
+                                if (nextType !== 'courier') onDeliveryTrackingNumberChange?.('');
+                              }}
+                              className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                              <option value="">بدون تعيين (يُعيَّن لاحقًا)</option>
+                              {availableDrivers.length > 0 && <option value="driver">طيار داخلي</option>}
+                              {availableCouriers.length > 0 && <option value="courier">شركة شحن</option>}
+                            </select>
+                          </div>
+
+                          {deliveryAssigneeType && (
+                            <div className="space-y-1">
+                              <label htmlFor="pos-delivery-assignee-id" className="text-[11px] font-bold text-slate-800 block">
+                                {deliveryAssigneeType === 'driver' ? 'الطيار:' : 'شركة الشحن:'}
+                              </label>
+                              <select
+                                id="pos-delivery-assignee-id"
+                                value={deliveryAssigneeId}
+                                onChange={(e) => onDeliveryAssigneeIdChange?.(e.target.value)}
+                                className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                <option value="">
+                                  {deliveryAssigneeType === 'driver' ? '-- اختر الطيار --' : '-- اختر شركة الشحن --'}
+                                </option>
+                                {(deliveryAssigneeType === 'driver' ? availableDrivers : availableCouriers).map(opt => (
+                                  <option key={opt.id} value={opt.id}>
+                                    {opt.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      ) : deliveryMode === 'drivers' ? (
+                        <div className="space-y-1">
+                          <label htmlFor="pos-delivery-driver-only" className="text-[11px] font-bold text-slate-800 block">
+                            الطيار (اختياري):
+                          </label>
+                          <select
+                            id="pos-delivery-driver-only"
+                            value={deliveryAssigneeType === 'driver' ? deliveryAssigneeId : ''}
+                            onChange={(e) => {
+                              const id = e.target.value;
+                              onDeliveryAssigneeTypeChange?.(id ? 'driver' : '');
+                              onDeliveryAssigneeIdChange?.(id);
+                            }}
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          >
+                            <option value="">بدون تعيين (يُعيَّن لاحقًا)</option>
+                            {availableDrivers.map(d => (
+                              <option key={d.id} value={d.id}>
+                                {d.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <label htmlFor="pos-delivery-courier-only" className="text-[11px] font-bold text-slate-800 block">
+                            شركة الشحن (اختياري):
+                          </label>
+                          <select
+                            id="pos-delivery-courier-only"
+                            value={deliveryAssigneeType === 'courier' ? deliveryAssigneeId : ''}
+                            onChange={(e) => {
+                              const id = e.target.value;
+                              onDeliveryAssigneeTypeChange?.(id ? 'courier' : '');
+                              onDeliveryAssigneeIdChange?.(id);
+                              if (!id) onDeliveryTrackingNumberChange?.('');
+                            }}
+                            className="w-full min-h-[44px] px-2.5 py-2 text-xs font-bold rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          >
+                            <option value="">بدون تعيين (يُعيَّن لاحقًا)</option>
+                            {availableCouriers.map(c => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {deliveryAssigneeType === 'courier' && deliveryAssigneeId && (
+                        <div className="space-y-1">
+                          <label htmlFor="pos-delivery-tracking" className="text-[11px] font-bold text-slate-800 block">
+                            رقم البوليصة / التتبع (اختياري):
+                          </label>
+                          <input
+                            id="pos-delivery-tracking"
+                            type="text"
+                            maxLength={60}
+                            dir="ltr"
+                            value={deliveryTrackingNumber}
+                            onChange={(e) => onDeliveryTrackingNumberChange?.(e.target.value)}
+                            placeholder="رقم البوليصة أو التتبع"
+                            className="w-full min-h-[44px] px-3 py-2 text-xs font-mono text-right rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -1253,8 +1685,20 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
           );
         })()}
 
-        {/* رسوم التوصيل (تظهر عند التفعيل للإدخال، أو لو قيمتها > 0) */}
-        {enableDeliveryFee ? (
+        {/* رسوم التوصيل (في وضع طلب التوصيل تُعرض سطرًا واحدًا محسوبًا دون ازدواجية؛ وفي غيره تبقى كما هي) */}
+        {isDeliveryOrderActive ? (
+          <div className="flex justify-between items-center gap-2 text-blue-700 font-semibold">
+            <span className="flex items-center gap-1">
+              <Truck className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              <span>
+                رسوم التوصيل{deliveryFeeManual && canEditDeliveryFee ? ' (معدّلة)' : ''}:
+              </span>
+            </span>
+            <span className="font-mono font-bold tabular-nums" dir="ltr">
+              + {Number(effectiveDeliveryOrderFee || 0).toFixed(2)} ج.م
+            </span>
+          </div>
+        ) : enableDeliveryFee ? (
           <div className="flex justify-between items-center gap-2 py-0.5">
             <label className="font-semibold text-slate-800 flex items-center gap-1">
               <Truck className="w-3.5 h-3.5 text-blue-600 shrink-0" />
@@ -1322,7 +1766,26 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
         </div>
       </div>
 
-      {/* 7. التحصيل في صف واحد مضغوط + فئات العملة القابلة للطي مع «نقدي» فقط */}
+      {/* 7. التحصيل: في الدفع عند الاستلام (COD) يُعرض مبلغ التحصيل عند التسليم دون حركة خزنة؛ وفي غيره يبقى التحصيل العادي كما هو */}
+      {isCodDelivery ? (
+        <div
+          className="pt-4 border-t border-slate-200 space-y-2 text-xs"
+          data-testid="pos-cod-payment-summary"
+        >
+          <div className="flex items-center justify-between gap-2 text-amber-900 font-extrabold">
+            <span className="inline-flex items-center gap-1.5">
+              <Truck className="w-4 h-4 text-amber-700 shrink-0" />
+              <span>المبلغ المطلوب تحصيله عند الاستلام:</span>
+            </span>
+            <span className="font-mono text-base tabular-nums" dir="ltr">
+              {netAmount.toFixed(2)} ج.م
+            </span>
+          </div>
+          <p className="text-[11px] font-semibold text-slate-600 leading-relaxed">
+            الدفع عند الاستلام: لا يتم تسجيل تحصيل نقدي في الخزينة عند إنشاء الفاتورة — يُسجّل المبلغ آجلًا على التوصيل ويُورَّد للخزينة عند التسوية.
+          </p>
+        </div>
+      ) : (
       <div className="pt-4 border-t border-slate-200 space-y-3 text-xs">
         <div className="flex flex-wrap items-end gap-2.5">
           {/* طريقة الدفع */}
@@ -1573,7 +2036,7 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
           </div>
         )}
       </div>
-
+      )}
       {/* 8. أزرار الحفظ (حفظ وطباعة، حفظ فقط) والإلغاء مثبتة في أسفل اللوحة دائماً */}
       <div className="sticky bottom-[58px] md:bottom-0 z-20 bg-white border-t border-slate-200 pt-3 pb-3 -mx-4 px-4 sm:-mx-5 sm:px-5 -mb-4 sm:-mb-5 rounded-b-2xl">
         <div className="grid grid-cols-1 sm:grid-cols-[1.35fr_1.15fr_0.9fr] gap-2">

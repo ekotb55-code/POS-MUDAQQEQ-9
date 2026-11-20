@@ -118,6 +118,9 @@ import type {
   CollectCreditPayload,
   CollectCreditResult,
   BulkEditOperationType,
+  BulkEditExcelSummary,
+  BulkEditCategoryImportSummary,
+  BulkEditCategoryRowAction,
   WarehouseDispatchOrder,
   WarehouseTransferLine,
   WarehouseTransferInsufficientItem
@@ -3633,6 +3636,7 @@ export const VALID_BULK_EDIT_OPERATIONS: readonly BulkEditOperationType[] = [
   'status',
   'image_url',
   'add_items',
+  'add_categories',
   'delete_items'
 ];
 
@@ -3855,6 +3859,14 @@ export const BULK_EDIT_OP_META: Record<BulkEditOperationType, BulkEditOperationM
       { wch: 26 }
     ],
     textCols: [4, 12]
+  },
+  add_categories: {
+    label: 'إضافة تصنيفات بالإكسيل',
+    sheetName: 'التصنيفات',
+    fileSlug: 'نموذج-إضافة-تصنيفات',
+    headers: ['التصنيف الرئيسي', 'التصنيف الفرعي'],
+    colWidths: [{ wch: 32 }, { wch: 32 }],
+    textCols: [0, 1]
   },
   delete_items: {
     label: 'حذف أصناف',
@@ -4109,6 +4121,13 @@ function validateBulkEditAccess(
       error: 'غير مصرح: تفتقر لصلاحية إضافة الأصناف [items.create]'
     };
   }
+  if (opType === 'add_categories' && !hasCategoriesManagePermission(session)) {
+    return {
+      ok: false,
+      statusCode: 403,
+      error: 'غير مصرح: تفتقر لصلاحية إدارة وإضافة التصنيفات [categories.manage]'
+    };
+  }
   if (opType === 'delete_items' && !hasDeleteItemsPermission(session)) {
     return {
       ok: false,
@@ -4355,6 +4374,11 @@ function extractRowsFromBulkEditXlsxBuffer(
     sheetName =
       wb.SheetNames.find(sn => normalizeExcelHeaderLabel(sn) === targetNorm) ||
       wb.SheetNames[0];
+  } else if (operationType === 'add_categories' && Array.isArray(wb.SheetNames) && wb.SheetNames.length > 0) {
+    const targetNorm = normalizeExcelHeaderLabel('التصنيفات');
+    sheetName =
+      wb.SheetNames.find(sn => normalizeExcelHeaderLabel(sn) === targetNorm) ||
+      wb.SheetNames[0];
   } else {
     sheetName = wb.SheetNames?.[0];
   }
@@ -4379,9 +4403,9 @@ function extractRowsFromBulkEditXlsxBuffer(
   const headerRow = (aoa[0] || []).map(h => normalizeExcelHeaderLabel(h));
   const usedCols = new Set<number>();
 
-  // عمود الكود/الباركود المخصص للمطابقة (غير مستخدم في الإضافة أو الحذف بالاسم)
+  // عمود الكود/الباركود المخصص للمطابقة (غير مستخدم في الإضافة أو الحذف بالاسم أو إضافة التصنيفات)
   let codeColIdx = -1;
-  if (operationType !== 'add_items' && operationType !== 'delete_items') {
+  if (operationType !== 'add_items' && operationType !== 'add_categories' && operationType !== 'delete_items') {
     const lookupCodeAliases =
       operationType === 'barcode_sku'
         ? ['الكود/الباركود', 'الكود / الباركود', 'الكود أو الباركود', 'الكود او الباركود', 'الكود الحالي/الباركود']
@@ -4411,13 +4435,16 @@ function extractRowsFromBulkEditXlsxBuffer(
     if (codeColIdx >= 0) usedCols.add(codeColIdx);
   }
 
-  // عمود اسم الصنف
-  const nameAliases =
-    operationType === 'name'
-      ? ['الاسم الحالي', 'اسم الصنف الحالي', 'اسم الصنف', 'اسم المنتج', 'الاسم']
-      : ['اسم الصنف', 'اسم المنتج', 'الاسم'];
-  const nameColIdx = findColumnIndex(headerRow, nameAliases, usedCols);
-  if (nameColIdx >= 0) usedCols.add(nameColIdx);
+  // عمود اسم الصنف (غير مستخدم في إضافة التصنيفات)
+  let nameColIdx = -1;
+  if (operationType !== 'add_categories') {
+    const nameAliases =
+      operationType === 'name'
+        ? ['الاسم الحالي', 'اسم الصنف الحالي', 'اسم الصنف', 'اسم المنتج', 'الاسم']
+        : ['اسم الصنف', 'اسم المنتج', 'الاسم'];
+    nameColIdx = findColumnIndex(headerRow, nameAliases, usedCols);
+    if (nameColIdx >= 0) usedCols.add(nameColIdx);
+  }
 
   if (operationType === 'delete_items') {
     if (nameColIdx === -1) {
@@ -4427,7 +4454,7 @@ function extractRowsFromBulkEditXlsxBuffer(
         error: 'لم يتم العثور على عمود "اسم الصنف" في الصف الأول من الملف. يرجى استخدام نموذج الإكسيل المعتمد.'
       };
     }
-  } else if (operationType !== 'add_items' && nameColIdx === -1 && codeColIdx === -1) {
+  } else if (operationType !== 'add_items' && operationType !== 'add_categories' && nameColIdx === -1 && codeColIdx === -1) {
     const expectedNameCol = operationType === 'name' ? 'الاسم الحالي' : 'اسم الصنف';
     return {
       ok: false,
@@ -4683,9 +4710,44 @@ function extractRowsFromBulkEditXlsxBuffer(
       mapOptional('imageUrl', ['رابط الصورة']);
       break;
     }
+    case 'add_categories': {
+      const mainIdx = findColumnIndex(headerRow, ['التصنيف الرئيسي'], usedCols);
+      if (mainIdx === -1) {
+        return {
+          ok: false,
+          statusCode: 400,
+          error: 'الملف ناقص عمود: «التصنيف الرئيسي» — يرجى تحميل نموذج إضافة التصنيفات بالإكسيل.'
+        };
+      }
+      fieldCols.mainCategory = mainIdx;
+      usedCols.add(mainIdx);
+
+      const subIdx = findColumnIndex(headerRow, ['التصنيف الفرعي'], usedCols);
+      if (subIdx === -1) {
+        return {
+          ok: false,
+          statusCode: 400,
+          error: 'الملف ناقص عمود: «التصنيف الفرعي» — يرجى تحميل نموذج إضافة التصنيفات بالإكسيل.'
+        };
+      }
+      fieldCols.subCategory = subIdx;
+      usedCols.add(subIdx);
+      break;
+    }
     case 'delete_items': {
       // عمود الاسم فقط
       break;
+    }
+  }
+
+  const reasonHeaderNorm = normalizeExcelHeaderLabel('السبب');
+  const extraCategoryColIndices: number[] = [];
+  if (operationType === 'add_categories') {
+    const maxCols = Math.max(headerRow.length, ...aoa.slice(0, Math.min(aoa.length, 50)).map(row => (Array.isArray(row) ? row.length : 0)));
+    for (let c = 0; c < maxCols; c++) {
+      if (usedCols.has(c)) continue;
+      if (headerRow[c] && headerRow[c] === reasonHeaderNorm) continue;
+      extraCategoryColIndices.push(c);
     }
   }
 
@@ -4721,13 +4783,27 @@ function extractRowsFromBulkEditXlsxBuffer(
       }
     }
 
+    if (operationType === 'add_categories') {
+      const extraNonEmpty: string[] = [];
+      for (const cIdx of extraCategoryColIndices) {
+        const extraVal = rowArr[cIdx];
+        if (!isCellEmpty(extraVal)) {
+          extraNonEmpty.push(String(extraVal).trim());
+        }
+      }
+      if (extraNonEmpty.length > 0) {
+        values.extraLevelValue = extraNonEmpty.join(' | ');
+        allFieldsEmpty = false;
+      }
+    }
+
     if (!nameStr && !codeStr && allFieldsEmpty) {
       continue;
     }
 
     parsedRows.push({
       rowNumber: r + 1,
-      name: nameStr,
+      name: operationType === 'add_categories' ? String(values.mainCategory ?? '').trim() : nameStr,
       codeOrBarcode: codeStr,
       newPriceRaw: values.primary,
       values
@@ -4746,7 +4822,10 @@ function extractRowsFromBulkEditXlsxBuffer(
     return {
       ok: false,
       statusCode: 400,
-      error: 'الملف لا يحتوي على أي صفوف بيانات. يرجى تعبئة بيانات الأصناف تحت صف العناوين.'
+      error:
+        operationType === 'add_categories'
+          ? 'الملف لا يحتوي على أي صفوف بيانات. يرجى تعبئة بيانات التصنيفات تحت صف العناوين.'
+          : 'الملف لا يحتوي على أي صفوف بيانات. يرجى تعبئة بيانات الأصناف تحت صف العناوين.'
     };
   }
 
@@ -4807,14 +4886,530 @@ type EvaluatedRowActionPayload =
         imageUrl: string;
       };
     }
+  | {
+      kind: 'add_category';
+      mainName: string;
+      normMain: string;
+      existingRootId?: string;
+      subName?: string;
+      normSub?: string;
+    }
   | { kind: 'delete_item' };
+
+function flattenCategoriesList(treeOrFlat: ProductCategory[]): ProductCategory[] {
+  const result: ProductCategory[] = [];
+  const seen = new Set<string>();
+  const visit = (list?: ProductCategory[]) => {
+    if (!Array.isArray(list)) return;
+    for (const cat of list) {
+      if (!cat || !cat.id || seen.has(cat.id)) continue;
+      seen.add(cat.id);
+      result.push(cat);
+      if (Array.isArray(cat.subcategories) && cat.subcategories.length > 0) {
+        visit(cat.subcategories);
+      }
+    }
+  };
+  visit(treeOrFlat);
+  return result;
+}
+
+function cleanCategoryImportCell(val: unknown): string {
+  return String(val ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function evaluateAddCategoriesRows(
+  inputRows: BulkEditParsedInputRow[],
+  existingCategories: ProductCategory[]
+) {
+  const MULTI_LEVEL_DELIMITER_RE = /[/\\>»→←]/;
+  const MAX_CATEGORY_NAME_LEN = 120;
+  const isCategoryInactive = (c: ProductCategory): boolean => {
+    const st = String(c.status || 'نشط').trim().toLowerCase();
+    return st === 'معطل' || st === 'موقوف' || st === 'inactive';
+  };
+
+  const existingRoots = existingCategories.filter(c => !c.parentCategoryId);
+  const existingSubs = existingCategories.filter(c => Boolean(c.parentCategoryId));
+
+  const rootsByNorm = new Map<string, ProductCategory[]>();
+  for (const r of existingRoots) {
+    const k = normalizeItemName(r.name);
+    if (!k) continue;
+    const list = rootsByNorm.get(k) || [];
+    list.push(r);
+    rootsByNorm.set(k, list);
+  }
+
+  const subsByParentId = new Map<string, ProductCategory[]>();
+  const subsByNorm = new Map<string, ProductCategory[]>();
+  for (const s of existingSubs) {
+    if (s.parentCategoryId) {
+      const pList = subsByParentId.get(s.parentCategoryId) || [];
+      pList.push(s);
+      subsByParentId.set(s.parentCategoryId, pList);
+    }
+    const k = normalizeItemName(s.name);
+    if (k) {
+      const nList = subsByNorm.get(k) || [];
+      nList.push(s);
+      subsByNorm.set(k, nList);
+    }
+  }
+
+  // فحص مسبق لاكتشاف السلاسل متعددة المستويات داخل نفس الملف (مثلاً صف: أ -> ب وصف آخر: ب -> ج)
+  const fileMainRowsByNorm = new Map<string, number[]>();
+  const fileSubRowsByNorm = new Map<string, number[]>();
+  for (const rawRow of inputRows) {
+    const values = rawRow.values || {};
+    const mName = cleanCategoryImportCell(values.mainCategory ?? rawRow.name);
+    const sName = cleanCategoryImportCell(values.subCategory);
+    if (mName && !MULTI_LEVEL_DELIMITER_RE.test(mName)) {
+      const nm = normalizeItemName(mName);
+      if (nm) {
+        const arr = fileMainRowsByNorm.get(nm) || [];
+        arr.push(rawRow.rowNumber);
+        fileMainRowsByNorm.set(nm, arr);
+      }
+    }
+    if (sName && !MULTI_LEVEL_DELIMITER_RE.test(sName)) {
+      const ns = normalizeItemName(sName);
+      if (ns) {
+        const arr = fileSubRowsByNorm.get(ns) || [];
+        arr.push(rawRow.rowNumber);
+        fileSubRowsByNorm.set(ns, arr);
+      }
+    }
+  }
+
+  const chainedLevelNorms = new Set<string>();
+  for (const [normKey, mRows] of fileMainRowsByNorm.entries()) {
+    const sRows = fileSubRowsByNorm.get(normKey);
+    if (sRows && sRows.length > 0 && mRows.length > 0) {
+      // اسم ورد كتصنيف رئيسي في صف وكفرعي في صف آخر (علاقة غير واضحة / محاولة أكثر من مستويين)
+      const hasDistinctRows = mRows.some(mr => sRows.some(sr => sr !== mr));
+      if (hasDistinctRows) {
+        chainedLevelNorms.add(normKey);
+      }
+    }
+  }
+
+  const plannedNewRootsByNorm = new Map<string, { name: string; firstRowNumber: number }>();
+  const reusedExistingRootIds = new Set<string>();
+  const plannedRootSeenInAnyValidRow = new Map<string, number>();
+  const plannedSubsByPair = new Map<string, number>();
+
+  let newSubsCount = 0;
+  let existingDuplicatesCount = 0;
+  let intraFileDuplicatesCount = 0;
+
+  const finalRows: Array<{
+    rowNumber: number;
+    itemId: string | undefined;
+    itemName: string;
+    inputName: string;
+    codeOrBarcode: string | undefined;
+    matchedBy: 'code_barcode' | 'name' | undefined;
+    currentPrice: number | null;
+    newPrice: number | null;
+    currentValueDisplay: string;
+    newValueDisplay: string;
+    status: 'will_update' | 'unchanged' | 'error';
+    reason: string | undefined;
+    warning: string | undefined;
+    rawValues: Record<string, any>;
+    mainCategoryName?: string;
+    subCategoryName?: string;
+    categoryAction?: BulkEditCategoryRowAction;
+    _actionPayload: EvaluatedRowActionPayload | undefined;
+  }> = [];
+
+  for (const rawRow of inputRows) {
+    const values = rawRow.values || {};
+    const mainName = cleanCategoryImportCell(values.mainCategory ?? rawRow.name);
+    const subName = cleanCategoryImportCell(values.subCategory);
+    const extraLevelValue = cleanCategoryImportCell(values.extraLevelValue);
+    const normMain = normalizeItemName(mainName);
+    const normSub = normalizeItemName(subName);
+
+    const rawValues: Record<string, any> = {
+      'التصنيف الرئيسي': mainName,
+      'التصنيف الفرعي': subName
+    };
+
+    const pushRow = (opts: {
+      status: 'will_update' | 'unchanged' | 'error';
+      currentValueDisplay: string;
+      newValueDisplay: string;
+      reason?: string;
+      categoryAction: BulkEditCategoryRowAction;
+      actionPayload?: EvaluatedRowActionPayload;
+      displayMainName?: string;
+    }) => {
+      const mDisp = opts.displayMainName || mainName;
+      finalRows.push({
+        rowNumber: rawRow.rowNumber,
+        itemId: undefined,
+        itemName: subName ? `${mDisp || 'بدون رئيسي'} / ${subName}` : mDisp || 'بدون اسم',
+        inputName: mainName,
+        codeOrBarcode: undefined,
+        matchedBy: undefined,
+        currentPrice: null,
+        newPrice: null,
+        currentValueDisplay: opts.currentValueDisplay,
+        newValueDisplay: opts.newValueDisplay,
+        status: opts.status,
+        reason: opts.reason,
+        warning: undefined,
+        rawValues,
+        mainCategoryName: mDisp,
+        subCategoryName: subName,
+        categoryAction: opts.categoryAction,
+        _actionPayload: opts.status === 'will_update' ? opts.actionPayload : undefined
+      });
+    };
+
+    // 1. التحقق من عدم وجود أعمدة إضافية (أكثر من مستويين)
+    if (extraLevelValue) {
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'غير صالح',
+        newValueDisplay: '—',
+        reason: 'القالب يدعم مستويين فقط (التصنيف الرئيسي والتصنيف الفرعي) — تم العثور على بيانات في عمود إضافي',
+        categoryAction: 'error'
+      });
+      continue;
+    }
+
+    // 2. التحقق من خلو التصنيف الرئيسي أو وجود فرعي بلا رئيسي
+    if (!mainName || !normMain) {
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'غير صالح',
+        newValueDisplay: '—',
+        reason: subName
+          ? `فرعي بلا رئيسي: لا يمكن إضافة التصنيف الفرعي "${subName}" بدون تحديد التصنيف الرئيسي`
+          : 'التصنيف الرئيسي فارغ ومطلوب',
+        categoryAction: 'error'
+      });
+      continue;
+    }
+
+    // 3. التحقق من طول الاسم
+    if (mainName.length > MAX_CATEGORY_NAME_LEN) {
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'غير صالح',
+        newValueDisplay: '—',
+        reason: `اسم التصنيف الرئيسي طويل جداً (الحد الأقصى ${MAX_CATEGORY_NAME_LEN} حرفاً)`,
+        categoryAction: 'error'
+      });
+      continue;
+    }
+    if (subName.length > MAX_CATEGORY_NAME_LEN) {
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'غير صالح',
+        newValueDisplay: '—',
+        reason: `اسم التصنيف الفرعي طويل جداً (الحد الأقصى ${MAX_CATEGORY_NAME_LEN} حرفاً)`,
+        categoryAction: 'error'
+      });
+      continue;
+    }
+
+    // 4. منع أكثر من مستويين عبر فواصل المسار (/ أو \ أو >)
+    if (MULTI_LEVEL_DELIMITER_RE.test(mainName) || (subName && MULTI_LEVEL_DELIMITER_RE.test(subName))) {
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'غير صالح',
+        newValueDisplay: '—',
+        reason: 'القالب يدعم مستويين فقط (التصنيف الرئيسي والتصنيف الفرعي) — لا يُسمح بكتابة مسارات متعددة المستويات أو الرموز (/ أو >)',
+        categoryAction: 'error'
+      });
+      continue;
+    }
+
+    // 5. منع تطابق اسم الفرعي مع اسم الرئيسي في نفس الصف
+    if (subName && normSub === normMain) {
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'غير صالح',
+        newValueDisplay: '—',
+        reason: `علاقة غير واضحة: لا يمكن أن يكون اسم التصنيف الفرعي "${subName}" مطابقاً لاسم التصنيف الرئيسي`,
+        categoryAction: 'error'
+      });
+      continue;
+    }
+
+    // 6. منع تسلسل أكثر من مستويين عبر صفوف الملف (اسم يظهر كرئيسي في صف وكفرعي في صف آخر)
+    if (chainedLevelNorms.has(normMain)) {
+      const mRows = fileMainRowsByNorm.get(normMain) || [];
+      const sRows = fileSubRowsByNorm.get(normMain) || [];
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'علاقة غير واضحة',
+        newValueDisplay: '—',
+        reason: `علاقة غير واضحة: "${mainName}" ورد كتصنيف رئيسي (صف ${mRows.join('، ')}) وكتصنيف فرعي (صف ${sRows.join('، ')}) — القالب يدعم مستويين فقط`,
+        categoryAction: 'error'
+      });
+      continue;
+    }
+    if (subName && chainedLevelNorms.has(normSub)) {
+      const mRows = fileMainRowsByNorm.get(normSub) || [];
+      const sRows = fileSubRowsByNorm.get(normSub) || [];
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'علاقة غير واضحة',
+        newValueDisplay: '—',
+        reason: `علاقة غير واضحة: "${subName}" ورد كتصنيف فرعي (صف ${sRows.join('، ')}) وكتصنيف رئيسي (صف ${mRows.join('، ')}) — القالب يدعم مستويين فقط`,
+        categoryAction: 'error'
+      });
+      continue;
+    }
+
+    // 7. مطابقة التصنيف الرئيسي الموجود في النظام
+    const rootMatches = rootsByNorm.get(normMain) || [];
+    let matchedExistingRoot: ProductCategory | undefined;
+    if (rootMatches.length > 1) {
+      const exactMatches = rootMatches.filter(c => c.name.trim().toLowerCase() === mainName.toLowerCase());
+      if (exactMatches.length === 1) {
+        matchedExistingRoot = exactMatches[0];
+      } else {
+        pushRow({
+          status: 'error',
+          currentValueDisplay: 'علاقة غير واضحة',
+          newValueDisplay: '—',
+          reason: `علاقة غير واضحة: التصنيف الرئيسي "${mainName}" يطابق أكثر من تصنيف رئيسي موجود في النظام`,
+          categoryAction: 'error'
+        });
+        continue;
+      }
+    } else if (rootMatches.length === 1) {
+      matchedExistingRoot = rootMatches[0];
+    } else {
+      // إذا لم يوجد كرئيسي لكنه موجود كفرعي حالياً في النظام -> علاقة غير واضحة / محاولة مستوى ثالث
+      const existingSubWithSameName = subsByNorm.get(normMain) || [];
+      if (existingSubWithSameName.length > 0) {
+        pushRow({
+          status: 'error',
+          currentValueDisplay: 'علاقة غير واضحة',
+          newValueDisplay: '—',
+          reason: `علاقة غير واضحة: "${mainName}" موجود حالياً كتصنيف فرعي في النظام ولا يمكن استخدامه كتصنيف رئيسي في هذا القالب (يُدعم مستويان فقط)`,
+          categoryAction: 'error'
+        });
+        continue;
+      }
+    }
+
+    // 8. تقييم الصف حسب وجود الرئيسي في النظام من عدمه
+    if (matchedExistingRoot) {
+      if (!subName) {
+        // رئيسي فقط وموجود مسبقاً -> مكرر (بدون تغيير ولا تعديل صامت)
+        existingDuplicatesCount += 1;
+        pushRow({
+          status: 'unchanged',
+          currentValueDisplay: 'رئيسي موجود مسبقاً',
+          newValueDisplay: `${matchedExistingRoot.name} (موجود)`,
+          reason: `مكرر: التصنيف الرئيسي "${matchedExistingRoot.name}" موجود بالفعل في النظام ولن يُكرَّر أو يُعدَّل`,
+          categoryAction: 'duplicate_existing',
+          displayMainName: matchedExistingRoot.name
+        });
+        continue;
+      }
+
+      if (isCategoryInactive(matchedExistingRoot)) {
+        pushRow({
+          status: 'error',
+          currentValueDisplay: 'رئيسي معطّل',
+          newValueDisplay: '—',
+          reason: `علاقة غير واضحة: التصنيف الرئيسي "${matchedExistingRoot.name}" موجود لكنه معطّل/موقوف ولا يمكن ربط فروع جديدة به دون تفعيله`,
+          categoryAction: 'error',
+          displayMainName: matchedExistingRoot.name
+        });
+        continue;
+      }
+
+      const existingChildren = subsByParentId.get(matchedExistingRoot.id) || [];
+      const dupChild = existingChildren.find(
+        c => normalizeItemName(c.name) === normSub || c.name.trim().toLowerCase() === subName.toLowerCase()
+      );
+      if (dupChild) {
+        existingDuplicatesCount += 1;
+        pushRow({
+          status: 'unchanged',
+          currentValueDisplay: 'فرعي موجود مسبقاً',
+          newValueDisplay: `${matchedExistingRoot.name} ← ${dupChild.name} (موجود)`,
+          reason: `مكرر: التصنيف الفرعي "${dupChild.name}" موجود بالفعل تحت "${matchedExistingRoot.name}" ولن يُكرَّر أو يُعدَّل`,
+          categoryAction: 'duplicate_existing',
+          displayMainName: matchedExistingRoot.name
+        });
+        continue;
+      }
+
+      const pairKey = `${normMain}||${normSub}`;
+      const prevPairRow = plannedSubsByPair.get(pairKey);
+      if (prevPairRow !== undefined) {
+        intraFileDuplicatesCount += 1;
+        pushRow({
+          status: 'error',
+          currentValueDisplay: 'مكرر بالملف',
+          newValueDisplay: '—',
+          reason: `اسم مكرر داخل الملف: التصنيف الفرعي "${subName}" تحت "${matchedExistingRoot.name}" مكرر مع الصف ${prevPairRow}`,
+          categoryAction: 'duplicate_in_file',
+          displayMainName: matchedExistingRoot.name
+        });
+        continue;
+      }
+
+      reusedExistingRootIds.add(matchedExistingRoot.id);
+      plannedSubsByPair.set(pairKey, rawRow.rowNumber);
+      newSubsCount += 1;
+      pushRow({
+        status: 'will_update',
+        currentValueDisplay: 'رئيسي موجود (يُعاد استخدامه)',
+        newValueDisplay: `إضافة فرعي «${subName}» تحت «${matchedExistingRoot.name}»`,
+        categoryAction: 'reused_root_new_sub',
+        displayMainName: matchedExistingRoot.name,
+        actionPayload: {
+          kind: 'add_category',
+          mainName: matchedExistingRoot.name,
+          normMain,
+          existingRootId: matchedExistingRoot.id,
+          subName,
+          normSub
+        }
+      });
+      continue;
+    }
+
+    // التصنيف الرئيسي جديد غير موجود في النظام
+    if (!subName) {
+      const prevRootRow = plannedRootSeenInAnyValidRow.get(normMain);
+      if (prevRootRow !== undefined) {
+        intraFileDuplicatesCount += 1;
+        pushRow({
+          status: 'error',
+          currentValueDisplay: 'مكرر بالملف',
+          newValueDisplay: '—',
+          reason: `اسم مكرر داخل الملف: التصنيف الرئيسي "${mainName}" ورد بالفعل في الصف ${prevRootRow}`,
+          categoryAction: 'duplicate_in_file'
+        });
+        continue;
+      }
+
+      plannedNewRootsByNorm.set(normMain, { name: mainName, firstRowNumber: rawRow.rowNumber });
+      plannedRootSeenInAnyValidRow.set(normMain, rawRow.rowNumber);
+      pushRow({
+        status: 'will_update',
+        currentValueDisplay: 'رئيسي جديد',
+        newValueDisplay: `إضافة تصنيف رئيسي «${mainName}»`,
+        categoryAction: 'new_root',
+        actionPayload: {
+          kind: 'add_category',
+          mainName,
+          normMain
+        }
+      });
+      continue;
+    }
+
+    // رئيسي جديد + فرعي جديد
+    const pairKey = `${normMain}||${normSub}`;
+    const prevPairRow = plannedSubsByPair.get(pairKey);
+    if (prevPairRow !== undefined) {
+      intraFileDuplicatesCount += 1;
+      pushRow({
+        status: 'error',
+        currentValueDisplay: 'مكرر بالملف',
+        newValueDisplay: '—',
+        reason: `اسم مكرر داخل الملف: التصنيف الفرعي "${subName}" تحت "${mainName}" مكرر مع الصف ${prevPairRow}`,
+        categoryAction: 'duplicate_in_file'
+      });
+      continue;
+    }
+
+    const existingPlannedRoot = plannedNewRootsByNorm.get(normMain);
+    let canonicalMainName = mainName;
+    let actionKind: BulkEditCategoryRowAction = 'new_root_and_sub';
+    let curDisplay = 'رئيسي جديد + فرعي جديد';
+
+    if (!existingPlannedRoot) {
+      plannedNewRootsByNorm.set(normMain, { name: mainName, firstRowNumber: rawRow.rowNumber });
+      plannedRootSeenInAnyValidRow.set(normMain, rawRow.rowNumber);
+    } else {
+      canonicalMainName = existingPlannedRoot.name;
+      actionKind = 'batch_root_new_sub';
+      curDisplay = 'رئيسي من نفس الملف + فرعي جديد';
+    }
+
+    plannedSubsByPair.set(pairKey, rawRow.rowNumber);
+    newSubsCount += 1;
+
+    pushRow({
+      status: 'will_update',
+      currentValueDisplay: curDisplay,
+      newValueDisplay:
+        actionKind === 'new_root_and_sub'
+          ? `إضافة رئيسي «${canonicalMainName}» + فرعي «${subName}»`
+          : `ربط فرعي «${subName}» بالرئيسي «${canonicalMainName}»`,
+      categoryAction: actionKind,
+      displayMainName: canonicalMainName,
+      actionPayload: {
+        kind: 'add_category',
+        mainName: canonicalMainName,
+        normMain,
+        subName,
+        normSub
+      }
+    });
+  }
+
+  const willUpdateCount = finalRows.filter(r => r.status === 'will_update').length;
+  const unchangedCount = finalRows.filter(r => r.status === 'unchanged').length;
+  const errorCount = finalRows.filter(r => r.status === 'error').length;
+
+  const categorySummary: BulkEditCategoryImportSummary = {
+    newRootsCount: plannedNewRootsByNorm.size,
+    reusedRootsCount: reusedExistingRootIds.size,
+    newSubsCount,
+    duplicatesCount: existingDuplicatesCount + intraFileDuplicatesCount,
+    existingDuplicatesCount,
+    intraFileDuplicatesCount,
+    errorCount
+  };
+
+  const summary: BulkEditExcelSummary = {
+    totalRows: finalRows.length,
+    willUpdateCount,
+    unchangedCount,
+    errorCount,
+    warningCount: 0,
+    categorySummary
+  };
+
+  return {
+    rows: finalRows,
+    summary,
+    newCategories: [] as Array<{ name: string; itemsCount: number }>,
+    zeroSalePriceCount: 0,
+    zeroSalePriceWarning: undefined as string | undefined
+  };
+}
 
 function evaluateBulkEditRows(
   inputRows: BulkEditParsedInputRow[],
   operationType: BulkEditOperationType,
   session?: BulkEditSessionInfo,
-  targetWarehouse?: Warehouse
+  targetWarehouse?: Warehouse,
+  categoriesOverride?: ProductCategory[]
 ) {
+  if (operationType === 'add_categories') {
+    return evaluateAddCategoriesRows(inputRows, categoriesOverride || memoryCategories);
+  }
   // فهرسة الأصناف الحالية بالاسم الموحد وبالكود/الباركود لسرعة المطابقة
   const byNormName = new Map<string, Item[]>();
   const byNormCode = new Map<string, Item[]>();
@@ -6161,7 +6756,7 @@ function evaluateBulkEditRows(
       ? `تم استيراد ${zeroSalePriceCount} صنفًا بسعر بيع صفر — راجع أسعارها`
       : undefined;
 
-  const summary = {
+  const summary: BulkEditExcelSummary = {
     totalRows: finalRows.length,
     willUpdateCount: finalRows.filter(r => r.status === 'will_update').length,
     unchangedCount: finalRows.filter(r => r.status === 'unchanged').length,
@@ -6210,7 +6805,7 @@ export async function generateBulkPriceEditTemplateBuffer(
       ws[ref] = { t: 's', v: existingVal, z: '@' };
     }
   }
-  const lastSheetRow = access.opType === 'add_items' ? 0 : 200;
+  const lastSheetRow = access.opType === 'add_items' || access.opType === 'add_categories' ? 0 : 200;
   ws['!ref'] = XLSX.utils.encode_range({
     s: { r: 0, c: 0 },
     e: { r: lastSheetRow, c: meta.headers.length - 1 }
@@ -6297,6 +6892,28 @@ export async function generateBulkPriceEditTemplateBuffer(
       }
     }
     guideWs['!cols'] = meta.colWidths;
+    guideWs['!views'] = [{ rightToLeft: true }];
+    XLSX.utils.book_append_sheet(wb, guideWs, 'مثال وتعليمات');
+  } else if (access.opType === 'add_categories') {
+    const guideAoa: any[][] = [
+      meta.headers,
+      ['المشروبات', ''],
+      ['إلكترونيات', 'شواحن'],
+      ['إلكترونيات', 'كابلات'],
+      ['إلكترونيات', 'سماعات'],
+      [],
+      ['تعليمات استخدام نموذج إضافة التصنيفات بالإكسيل:'],
+      ['1. العمود الأول «التصنيف الرئيسي» إلزامي في كل صف، والعمود الثاني «التصنيف الفرعي» اختياري.'],
+      ['2. إذا كان عمود «التصنيف الفرعي» فارغاً (مثل صف «المشروبات»)، يُضاف التصنيف الرئيسي فقط.'],
+      ['3. يمكن تكرار اسم التصنيف الرئيسي في عدة صفوف (مثل «إلكترونيات») لإضافة أكثر من تصنيف فرعي تحته، وسيتم إنشاء الرئيسي مرة واحدة فقط وربط جميع الفروع به.'],
+      ['4. إذا كان التصنيف الرئيسي موجوداً بالفعل في النظام، يتم إعادة استخدامه تلقائياً دون إنشاء نسخة مكررة.'],
+      ['5. إذا كان التصنيف الفرعي موجوداً مسبقاً تحت نفس الرئيسي، يتم تجاوزه كمكرر ولا تُعدَّل بياناته بصمت.'],
+      ['6. هذا القالب يدعم مستويين فقط (رئيسي وفرعي) — لا يُسمح بأعمدة مستويات إضافية أو كتابة مسارات بعلامات (/ أو >).'],
+      ['7. لا تقوم هذه العملية بحذف أو إعادة تسمية أي تصنيفات حالية ولا تغيّر ربط الأصناف الحالية.'],
+      [`8. الحد الأقصى المسموح به هو ${BULK_EDIT_EXCEL_MAX_ROWS} صف في الملف الواحد.`]
+    ];
+    const guideWs = XLSX.utils.aoa_to_sheet(guideAoa);
+    guideWs['!cols'] = [{ wch: 46 }, { wch: 36 }];
     guideWs['!views'] = [{ rightToLeft: true }];
     XLSX.utils.book_append_sheet(wb, guideWs, 'مثال وتعليمات');
   }
@@ -6439,7 +7056,27 @@ async function runBulkEditEvaluation(
     targetWarehouse = whRes.warehouse;
   }
 
-  const evaluated = evaluateBulkEditRows(prepared.inputRows, prepared.opType, session, targetWarehouse);
+  let categoriesOverride: ProductCategory[] | undefined;
+  if (opType === 'add_categories' && isSheetsDataMode(getSystemConfig())) {
+    try {
+      const sheetCats = await getCategories(session);
+      categoriesOverride = flattenCategoriesList(sheetCats);
+    } catch (err: any) {
+      return {
+        success: false as const,
+        statusCode: 503,
+        error: err?.message || 'تعذر جلب التصنيفات الحالية للتحقق من الملف'
+      };
+    }
+  }
+
+  const evaluated = evaluateBulkEditRows(
+    prepared.inputRows,
+    prepared.opType,
+    session,
+    targetWarehouse,
+    categoriesOverride
+  );
   return {
     success: true as const,
     statusCode: 200,
@@ -6478,7 +7115,7 @@ export async function previewBulkPriceEditExcel(
   session?: BulkEditSessionInfo
 ) {
   const config = getSystemConfig();
-  if (isSheetsDataMode(config)) {
+  if (isSheetsDataMode(config) && payload?.operationType !== 'add_categories') {
     const prepared = await prepareBulkEditInputRows(payload, session);
     if (prepared.success === false) {
       return prepared;
@@ -6567,7 +7204,7 @@ export async function executeBulkPriceEditExcel(
   session?: BulkEditSessionInfo
 ) {
   const config = getSystemConfig();
-  if (isSheetsDataMode(config)) {
+  if (isSheetsDataMode(config) && payload?.operationType !== 'add_categories') {
     const prepared = await prepareBulkEditInputRows(payload, session);
     if (prepared.success === false) {
       return {
@@ -6806,7 +7443,14 @@ export async function executeBulkPriceEditExcel(
   const opMeta = BULK_EDIT_OP_META[opType];
   const now = new Date().toISOString();
   const batchSuffix = Date.now().toString().slice(-6);
-  const batchPrefix = opType === 'add_items' ? 'BULK-ADD' : opType === 'delete_items' ? 'BULK-DEL' : 'BULK-EDIT';
+  const batchPrefix =
+    opType === 'add_items'
+      ? 'BULK-ADD'
+      : opType === 'add_categories'
+      ? 'BULK-CAT'
+      : opType === 'delete_items'
+      ? 'BULK-DEL'
+      : 'BULK-EDIT';
   const batchId = `${batchPrefix}-${batchSuffix}`;
   const userName = session?.name || session?.phone || 'مستخدم النظام';
   const userId = session?.userId || session?.id || '';
@@ -6995,6 +7639,166 @@ export async function executeBulkPriceEditExcel(
 
       // الإضافة غير قابلة للتراجع، وتُصفّر سجل آخر عملية
       lastBulkEditUndoRecord = null;
+    } else if (opType === 'add_categories') {
+      // تنفيذ آمن صفاً بصف عبر المسار المعتمد saveCategory مع كشف أي حفظ جزئي وعدم إخفاء أي فشل
+      const createdRootsByNorm = new Map<string, ProductCategory>();
+      const failedRootsByNorm = new Map<string, string>();
+      const reusedRootIdsExecuted = new Set<string>();
+      let createdRootsCount = 0;
+      let createdSubsCount = 0;
+      let failedRowsCount = 0;
+
+      for (const row of preview.rows) {
+        if (row.status !== 'will_update' || row._actionPayload?.kind !== 'add_category') continue;
+        const act = row._actionPayload;
+        const pubRow = publicRows.find(pr => pr.rowNumber === row.rowNumber);
+
+        let parentId: string | null = null;
+        if (act.existingRootId) {
+          parentId = act.existingRootId;
+          reusedRootIdsExecuted.add(act.existingRootId);
+        } else if (createdRootsByNorm.has(act.normMain)) {
+          parentId = createdRootsByNorm.get(act.normMain)!.id;
+        } else if (failedRootsByNorm.has(act.normMain)) {
+          const prevErr = failedRootsByNorm.get(act.normMain)!;
+          if (pubRow) {
+            pubRow.status = 'error';
+            pubRow.reason = `تعذر إنشاء التصنيف الرئيسي "${act.mainName}": ${prevErr}`;
+          }
+          failedRowsCount += 1;
+          continue;
+        } else {
+          const rootSaveRes = await saveCategory(
+            {
+              name: act.mainName,
+              parentCategoryId: null,
+              status: 'نشط',
+              showInPOS: true
+            },
+            session
+          );
+          if (!rootSaveRes.success || !rootSaveRes.category) {
+            const errMsg = rootSaveRes.error || 'تعذر حفظ التصنيف الرئيسي';
+            failedRootsByNorm.set(act.normMain, errMsg);
+            if (pubRow) {
+              pubRow.status = 'error';
+              pubRow.reason = errMsg;
+            }
+            failedRowsCount += 1;
+            continue;
+          }
+          createdRootsByNorm.set(act.normMain, rootSaveRes.category);
+          createdRootsCount += 1;
+          parentId = rootSaveRes.category.id;
+        }
+
+        if (act.subName) {
+          const subSaveRes = await saveCategory(
+            {
+              name: act.subName,
+              parentCategoryId: parentId,
+              status: 'نشط',
+              showInPOS: true
+            },
+            session
+          );
+          if (!subSaveRes.success || !subSaveRes.category) {
+            if (pubRow) {
+              pubRow.status = 'error';
+              pubRow.reason = subSaveRes.error || 'تعذر حفظ التصنيف الفرعي';
+            }
+            failedRowsCount += 1;
+            continue;
+          }
+          createdSubsCount += 1;
+          if (pubRow) {
+            pubRow.itemId = subSaveRes.category.id;
+          }
+          updatedCount += 1;
+        } else {
+          if (pubRow) {
+            pubRow.itemId = parentId || undefined;
+          }
+          updatedCount += 1;
+        }
+      }
+
+      lastBulkEditUndoRecord = null;
+
+      const finalUnchangedCount = publicRows.filter(r => r.status === 'unchanged').length;
+      const finalErrorCount = publicRows.filter(r => r.status === 'error').length;
+      const prevCatSummary = preview.summary.categorySummary;
+      const finalCategorySummary: BulkEditCategoryImportSummary = {
+        newRootsCount: prevCatSummary?.newRootsCount ?? createdRootsCount,
+        reusedRootsCount: reusedRootIdsExecuted.size,
+        newSubsCount: prevCatSummary?.newSubsCount ?? createdSubsCount,
+        duplicatesCount: prevCatSummary?.duplicatesCount ?? finalUnchangedCount,
+        existingDuplicatesCount: prevCatSummary?.existingDuplicatesCount ?? finalUnchangedCount,
+        intraFileDuplicatesCount: prevCatSummary?.intraFileDuplicatesCount ?? 0,
+        errorCount: finalErrorCount,
+        createdRootsCount,
+        createdSubsCount,
+        failedRowsCount
+      };
+      const finalCatExecSummary = {
+        ...preview.summary,
+        willUpdateCount: updatedCount,
+        unchangedCount: finalUnchangedCount,
+        errorCount: finalErrorCount,
+        categorySummary: finalCategorySummary
+      };
+      const partialSuccess = updatedCount > 0 && failedRowsCount > 0;
+
+      recordAuditLog(
+        {
+          id: session?.id || session?.userId || 'system',
+          name: userName,
+          role: session?.role || 'user',
+          phone: session?.phone
+        },
+        'CATEGORIES_BULK_ADD_EXCEL',
+        'ProductCategory',
+        batchId,
+        `إضافة تصنيفات بالإكسيل — المستخدم: ${userName} | رؤوس جديدة: ${createdRootsCount} | رؤوس أُعيد استخدامها: ${reusedRootIdsExecuted.size} | فروع جديدة: ${createdSubsCount} | مكررات: ${finalCategorySummary.duplicatesCount} | أخطاء: ${finalErrorCount}${partialSuccess ? ` (حفظ جزئي — فشل ${failedRowsCount} صف)` : ''} | الملف: ${displayFileName}`
+      );
+
+      if (updatedCount === 0 && failedRowsCount > 0) {
+        return {
+          success: false,
+          partialSuccess: false,
+          statusCode: 400,
+          operationType: opType,
+          fileName: preview.fileName,
+          batchId,
+          updatedCount: 0,
+          unchangedCount: finalUnchangedCount,
+          errorCount: finalErrorCount,
+          warningCount: 0,
+          summary: finalCatExecSummary,
+          rows: publicRows,
+          undoAvailable: false,
+          error: 'تعذر حفظ أي صف من التصنيفات — راجع تفاصيل الأخطاء في الجدول أدناه.'
+        };
+      }
+
+      return {
+        success: true,
+        partialSuccess,
+        statusCode: 200,
+        operationType: opType,
+        fileName: preview.fileName,
+        batchId,
+        updatedCount,
+        unchangedCount: finalUnchangedCount,
+        errorCount: finalErrorCount,
+        warningCount: 0,
+        summary: finalCatExecSummary,
+        rows: publicRows,
+        undoAvailable: false,
+        message: partialSuccess
+          ? `تم حفظ جزء من الملف (${createdRootsCount} رئيسي جديد و${createdSubsCount} فرعي جديد) وتعذر حفظ ${failedRowsCount} صف — راجع تفاصيل الصفوف أدناه.`
+          : `تمت إضافة ${createdRootsCount} تصنيف رئيسي جديد و${createdSubsCount} تصنيف فرعي بنجاح.`
+      };
     } else if (opType === 'delete_items') {
       for (const row of preview.rows) {
         if (row.status !== 'will_update' || !row.itemId || row._actionPayload?.kind !== 'delete_item') continue;
@@ -7932,6 +8736,13 @@ export async function generateBulkEditErrorsExcelBuffer(
       success: false,
       statusCode: 403,
       error: 'غير مصرح: تفتقر لصلاحية التعديل بالإكسيل [products.bulk_edit_excel]'
+    };
+  }
+  if (payload?.operationType === 'add_categories' && !hasCategoriesManagePermission(session)) {
+    return {
+      success: false,
+      statusCode: 403,
+      error: 'غير مصرح: تفتقر لصلاحية إدارة وإضافة التصنيفات [categories.manage]'
     };
   }
 

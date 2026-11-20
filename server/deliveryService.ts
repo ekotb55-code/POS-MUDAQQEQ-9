@@ -207,11 +207,68 @@ export function settle(body: any, session: DeliverySession): SettleResult {
   return { success: true, settlement };
 }
 
-/** صرف مستحقات الطيار. body: { driverId, salary, payCommission, deductShortage, cashboxId, note, idempotencyKey } */
-export function payDriver(body: any, session: DeliverySession): { success: true; duplicate?: boolean; payout: D.DriverPayout } {
+export interface PayDriverResult {
+  success: boolean;
+  duplicate?: boolean;
+  requiresConfirmation?: boolean;
+  code?: string;
+  payout?: D.DriverPayout;
+  preview?: D.PayoutPreview;
+  dues?: D.DriverDues;
+  message?: string;
+}
+
+function sameOrderIdSet(a: unknown, b: string[]): boolean {
+  if (!Array.isArray(a) || a.length !== b.length) return false;
+  const left = a.map(String).sort();
+  const right = [...b].sort();
+  return left.every((id, idx) => id === right[idx]);
+}
+
+function hasPayoutPreviewChanged(body: any, fresh: D.PayoutPreview): boolean {
+  const eqMoney = (v: unknown, actual: number): boolean => {
+    const n = Number(v);
+    return Number.isFinite(n) && Math.abs(r2(n) - actual) < 0.005;
+  };
+  const exp = body?.expectedPreview;
+  if (exp && typeof exp === 'object') {
+    if (!eqMoney(exp.paid, fresh.paid)) return true;
+    if (exp.salary !== undefined && !eqMoney(exp.salary, fresh.salary)) return true;
+    if (exp.commission !== undefined && !eqMoney(exp.commission, fresh.commission)) return true;
+    if (exp.shortageDeducted !== undefined && !eqMoney(exp.shortageDeducted, fresh.shortageDeducted)) return true;
+    if (exp.orderIds !== undefined && !sameOrderIdSet(exp.orderIds, fresh.orderIds)) return true;
+    return false;
+  }
+  if (body?.expectedPaid !== undefined && body?.expectedPaid !== null && String(body.expectedPaid).trim() !== '') {
+    return !eqMoney(body.expectedPaid, fresh.paid);
+  }
+  return false;
+}
+
+/** صرف مستحقات الطيار. body: { driverId, salary, payCommission, deductShortage, cashboxId, note, idempotencyKey, expectedPreview? } */
+export function payDriver(body: any, session: DeliverySession): PayDriverResult {
   const key = idemKey(body?.idempotencyKey);
   const done = D.payoutByKey(key);
   if (done) return { success: true, duplicate: true, payout: done };
+
+  const hasPreviewExpectation =
+    (body?.expectedPreview && typeof body.expectedPreview === 'object') ||
+    (body?.expectedPaid !== undefined && body?.expectedPaid !== null && String(body.expectedPaid).trim() !== '');
+
+  if (hasPreviewExpectation) {
+    const fresh = D.previewPayout(body?.driverId, body);
+    if (hasPayoutPreviewChanged(body, fresh.preview)) {
+      return {
+        success: false,
+        requiresConfirmation: true,
+        code: 'PAYOUT_PREVIEW_CHANGED',
+        preview: fresh.preview,
+        dues: fresh.dues,
+        message: 'تغيّرت مستحقات الطيار أو صافي المبلغ منذ المعاينة. راجع المعاينة المحدثة وأكّد الصرف من جديد.'
+      };
+    }
+  }
+
   const plan = D.planPayout(body?.driverId, body);
   const cb = resolveDeliveryCashbox(body?.cashboxId, session, 'payment');
   if (!cb.ok) throw new D.DeliveryError(cb.error || 'الخزنة مش متاحة');
