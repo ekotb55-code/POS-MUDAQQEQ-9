@@ -1,0 +1,1815 @@
+export type UserRole = 'designer' | 'manager' | 'employee';
+
+// مفاتيح الصلاحيات المركزية للنظام (Deny by default)
+export type PermissionKey =
+  // 1. لوحة التحكم
+  | 'dashboard.view'
+  | 'dashboard.view_cashboxes'
+  // 2. الأصناف
+  | 'items.view'
+  | 'items.create'
+  | 'items.edit'
+  | 'items.status'
+  | 'items.delete'
+  // 3. الأسعار
+  | 'prices.view_sale'
+  | 'prices.view_purchase'
+  | 'prices.view_packaging'
+  | 'prices.override_min_price'
+  // 4. المخزون
+  | 'stock.view'
+  | 'stock.edit'
+  | 'stock.adjust'
+  | 'stock.alerts'
+  | 'stock.override_negative'
+  // 5. المنصات
+  | 'platforms.view'
+  | 'platforms.create'
+  | 'platforms.edit'
+  | 'platforms.status'
+  | 'platforms.pricing'
+  // 6. الفواتير
+  | 'invoices.view'
+  | 'invoices.view_in_pos'
+  | 'invoices.create'
+  | 'invoices.edit'
+  | 'invoices.cancel'
+  | 'invoices.print'
+  | 'invoices.export'
+  | 'invoices.collect_credit'
+  | 'invoices.edit_cash_paid'
+  | 'invoices.edit_price_before_save'
+  | 'invoices.edit_tax_before_save'
+  | 'pos.edit_rates'
+  | 'invoices.edit_after_save'
+  | 'invoices.edit_price_after_save'
+  | 'invoices.edit_tax_after_save'
+  | 'invoices.edit_quantity_after_save'
+  | 'invoices.edit_items_after_save'
+  | 'invoices.edit_platform_after_save'
+  | 'invoices.edit_customer_after_save'
+  | 'invoices.edit_discount_shipping_after_save'
+  | 'invoices.edit_cashbox_after_save'
+  // 7. المرتجعات
+  | 'returns.view'
+  | 'returns.create'
+  | 'returns.approve'
+  | 'returns.restock'
+  // 8. الأرباح والتقارير
+  | 'reports.view_profit'
+  | 'reports.view_costs'
+  | 'reports.view_reports'
+  | 'reports.export'
+  // 9. المستخدمون
+  | 'users.view'
+  | 'users.create'
+  | 'users.edit'
+  | 'users.status'
+  // 10. الصلاحيات
+  | 'permissions.view'
+  | 'permissions.manage'
+  // 11. إعدادات الشركة والمظهر
+  | 'settings.company_appearance'
+  // 12. إعدادات الفاتورة والطباعة
+  | 'settings.invoice_print'
+  // 13. إعدادات عرض الأصناف وشاشة المبيعات
+  | 'settings.display_customization'
+  // 14. إعدادات النظام والربط
+  | 'settings.system_integration'
+  | 'settings.backup'
+  | 'settings.bank_link'
+  | 'settings.bank_templates'
+  | 'settings.sales_rules'
+  | 'settings.ui_scale'
+  | 'settings.visitor_display'
+  | 'visitor.display'
+  | 'items.print_labels'
+  | 'settings.label_print'
+  | 'settings.invoice_numbering'
+  | 'delivery.settings'
+  | 'delivery.view'
+  | 'delivery.manage'
+  | 'delivery.edit_fee'
+  | 'delivery.settle'
+  | 'delivery.reports'
+  | 'delivery.driver'
+  | 'settings.reset_operations'
+  | 'settings.factory_reset'
+  | 'settings.negative_stock'
+  // 15. عرض سجل التدقيق
+  | 'audit.view'
+  // 16. الموردين والمشتريات
+  | 'suppliers.view'
+  | 'suppliers.create'
+  | 'suppliers.edit'
+  | 'suppliers.delete'
+  | 'purchases.view'
+  | 'purchases.create'
+  | 'purchases.return'
+  // 17. العملاء
+  | 'customers.view'
+  | 'customers.create'
+  | 'customers.edit'
+  // 18. الخزائن والتحويلات المالية
+  | 'cashbox.view'
+  | 'cashbox.create'
+  | 'cashbox.transfer'
+  | 'cashbox.receipt'
+  | 'cashbox.payment'
+  // 19. استيراد وتصدير الأصناف
+  | 'items.import_export'
+  | 'products.export'
+  | 'products.bulk_edit_excel'
+  | 'products.inline_edit'
+  // 20. إدارة التصنيفات
+  | 'categories.view'
+  | 'categories.manage'
+  // 21. تقارير حركة وتعديلات المخزون والتقسيط وتقارير المنصات
+  | 'reports.item_movement.view'
+  | 'reports.unsold_cart_items.view'
+  | 'reports.stock_adjustments.view'
+  | 'reports.bnpl_view'
+  | 'reports.platform_view'
+  // 22. إدارة المزامنة والعمل بدون إنترنت
+  | 'offline.manage'
+  // 23. إدارة المخازن المتعددة
+  | 'warehouses.view'
+  | 'warehouses.manage'
+  | 'warehouses.transfer';
+
+export interface PermissionDefinition {
+  key: PermissionKey;
+  label: string;
+  category: string;
+  description: string;
+  designerOnly?: boolean;
+}
+
+export interface Warehouse {
+  id: string;
+  name: string;
+  status: 'active' | 'inactive' | 'نشط' | 'موقوف';
+  notes?: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface WarehouseStock {
+  itemId: string;
+  warehouseId: string;
+  quantity: number;
+  reorderLimit?: number | null;
+  updatedAt?: string;
+}
+
+export interface UserWarehouseConfig {
+  allowedWarehouseIds: string[];
+  defaultWarehouseId?: string;
+}
+
+export interface WarehouseItemBreakdown {
+  warehouseId: string;
+  warehouseName: string;
+  status: string;
+  isDefault: boolean;
+  quantity: number;
+  reorderLimit?: number;
+  customReorderLimit?: number | null;
+}
+
+export interface UserWarehousesResponse {
+  success: boolean;
+  userId?: string;
+  role?: UserRole;
+  seesAllWarehouses?: boolean;
+  warehouseConfig?: UserWarehouseConfig;
+  warehouses?: Warehouse[];
+  error?: string;
+}
+
+export interface UserCashboxConfig {
+  allowedSaleCashboxIds: string[];
+  defaultSaleCashboxId?: string;
+  allowedReturnCashboxIds: string[];
+  defaultReturnCashboxId?: string;
+  allowedReceiptCashboxIds: string[];
+  allowedPaymentCashboxIds: string[];
+  allowedTransferCashboxIds: string[];
+}
+
+export interface UserAccount {
+  id: string;
+  username: string; // اسم المستخدم (عربي أو إنجليزي مع أرقام)
+  name: string; // الاسم الكامل الظاهر
+  phone?: string; // اختياري للتواصل
+  role: UserRole;
+  status: 'active' | 'inactive' | 'نشط' | 'موقوف';
+  permissions: PermissionKey[];
+  cashboxConfig?: UserCashboxConfig;
+  warehouseConfig?: UserWarehouseConfig;
+  createdAt?: string;
+  isOwner?: boolean;
+  mustChangePassword?: boolean;
+  offlineVerifier?: string;
+  offlineSalt?: string;
+  offlineIterations?: number;
+  permissionsUpdatedAt?: string;
+  permissionsUpdatedByDevice?: string;
+}
+
+export interface AuthSession {
+  token: string;
+  user: UserAccount;
+  expiresAt: number;
+  offline?: boolean;
+}
+
+export type AppTheme = 'light-sky' | 'dark' | 'current' | 'aurora' | 'aurora-sky';
+export const VALID_APP_THEMES: readonly AppTheme[] = [
+  'light-sky',
+  'dark',
+  'current',
+  'aurora',
+  'aurora-sky'
+];
+export function isValidAppTheme(value: unknown): value is AppTheme {
+  return typeof value === 'string' && (VALID_APP_THEMES as readonly string[]).includes(value);
+}
+export type MotionMode = 'on' | 'off';
+
+export interface ContactSettings {
+  supportWhatsapp: string;
+  supportPhone: string;
+  salesWhatsapp: string;
+  salesPhone: string;
+}
+
+export type KeyboardShortcutActionId =
+  | 'pos.save_and_print'
+  | 'pos.save_only'
+  | 'pos.cancel_invoice'
+  | 'pos.focus_barcode'
+  | 'pos.focus_search'
+  | 'pos.focus_paid'
+  | 'nav.pos'
+  | 'nav.dashboard'
+  | 'nav.items'
+  | 'nav.invoices'
+  | 'nav.customers'
+  | 'nav.reports'
+  | 'general.save_form'
+  | 'general.add_new'
+  | 'general.focus_search'
+  | 'general.print_page'
+  | 'general.close_or_back';
+
+export interface KeyboardShortcutBinding {
+  key: string;
+  enabled: boolean;
+}
+
+export interface KeyboardShortcutsSettings {
+  enabled: boolean;
+  bindings: Record<KeyboardShortcutActionId, KeyboardShortcutBinding>;
+}
+
+// 1. هوية الشركة ومظهر التطبيق
+export interface CompanySettings {
+  storeName: string;
+  brandTagline: string;
+  logoUrl: string;
+  phone: string;
+  email: string;
+  address: string;
+  taxNumber: string;
+  commercialRecord: string;
+  themeColor: string; // مثل '#0e7490'
+  accentColor: string; // مثل '#14b8a6'
+  fontFamily: string; // 'Tajawal' | 'Cairo' | 'sans-serif'
+  customCss?: string;
+  appTheme?: AppTheme;
+  motionEnabled?: boolean;
+  enableDeliveryFee?: boolean;
+  supportWhatsapp?: string;
+  supportPhone?: string;
+  salesWhatsapp?: string;
+  salesPhone?: string;
+  keyboardShortcuts?: KeyboardShortcutsSettings;
+}
+
+// 2. إعدادات الفواتير والطباعة
+export interface InvoicePrintSettings {
+  paperSize: '58mm' | '80mm' | 'a4' | 'custom';
+  customWidthMm?: number;
+  showLogo: boolean;
+  showCompanyName: boolean;
+  showTagline: boolean;
+  showTaxNumber: boolean;
+  showCommercialRecord: boolean;
+  showAddress: boolean;
+  showPhone: boolean;
+  showCustomerInfo?: boolean;
+  showPlatform: boolean;
+  showDiscounts: boolean;
+  showBarcode: boolean;
+  showNotes: boolean;
+  autoFillCashPaid?: boolean;
+  headerText: string;
+  footerText: string;
+  termsAndConditions: string;
+  returnPolicyText: string;
+
+  // إعدادات وتخصيصات الطباعة الجديدة
+  showHeaderImage?: boolean;
+  headerImageUrl?: string;
+  showCustomerName?: boolean;
+  showCustomerPhone?: boolean;
+  showCustomerAddress?: boolean;
+  showCustomerBalance?: boolean;
+  showPaymentDetails?: boolean;
+  showItemsCount?: boolean;
+  showCashier?: boolean;
+
+  // إعدادات الطباعة المباشرة وإصلاح العرض والتحكم بالهيدر
+  showReceiptPreview?: boolean;
+  printableWidthMm?: number;
+  showInvoiceNumber?: boolean;
+  showDateTime?: boolean;
+  showInvoiceStatus?: boolean;
+  printedItemLabel?: 'name' | 'printName';
+}
+
+// 3. إعدادات عرض الأصناف وشاشة المبيعات
+export interface DisplaySettings {
+  showItemImages: boolean;
+  showStockQuantity: boolean;
+  showStockStatusBadge: boolean;
+  showSalePrice: boolean;
+  visibleColumns: string[];
+  posLayout: 'grid' | 'compact' | 'list';
+  enableQuickBarcodeScan: boolean;
+  confirmInvoiceBeforeSave: boolean;
+  autoFillCashPaid?: boolean;
+  enableInlineEdit?: boolean;
+  keyboardShortcuts?: KeyboardShortcutsSettings;
+}
+
+// 4. سجل التدقيق
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  actorId: string;
+  actorName: string;
+  actorRole: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  details: string;
+}
+
+export interface ItemBarcode {
+  id?: string;
+  itemId: string;
+  barcode: string;
+  type: 'primary' | 'secondary';
+  label?: string;
+  active?: boolean;
+  createdAt?: string;
+}
+
+export interface TaxSettings {
+  taxInclusive: boolean; // هل سعر البيع شامل الضريبة (true) أم تُضاف فوق السعر (false)
+  platformCommissionOn: 'before_tax' | 'after_tax'; // هل عمولة المنصة تُحسب قبل أم بعد الضريبة
+}
+
+export interface StockSettings {
+  allowNegativeStockSale: boolean;
+  allowNegativeWarehouseTransfer?: boolean;
+}
+
+export interface ProductCategory {
+  id: string;
+  name: string;
+  parentCategoryId?: string | null;
+  status: 'active' | 'inactive' | 'نشط' | 'موقوف' | 'معطل';
+  showInPOS: boolean;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt?: string;
+  level?: number;
+  parentName?: string;
+  itemCount?: number;
+  subcategories?: ProductCategory[];
+}
+
+export interface Item {
+  id: string;
+  name: string;
+  printName?: string;
+  imageUrl: string;
+  categoryId?: string; // معرّف التصنيف
+  categoryName?: string; // اسم التصنيف الحي أو المحفوظ
+  barcode?: string; // الباركود الأساسي
+  secondaryBarcodes?: string[]; // الباركودات الفرعية
+  barcodes?: ItemBarcode[]; // سجلات الباركود التفصيلية
+  sku?: string; // كود الصنف SKU
+  supplier?: string; // المورد أو المورد الافتراضي
+  unit?: string; // وحدة القياس (قطعة، علبة، كرتونة، إلخ)
+  taxRate?: number; // نسبة الضريبة المئوية % (افتراضي 0%)
+  salePrice: number;
+  minPrice?: number; // الحد الأدنى لسعر البيع (لا يجوز البيع بأقل منه إلا بصلاحية صريحة)
+  purchasePrice?: number; // متاح للمخوّلين فقط
+  packagingCost?: number; // متاح للمخوّلين فقط
+  stockQuantity: number;
+  reorderLimit?: number; // حد إعادة الطلب
+  notes: string;
+  createdAt: string;
+  updatedAt?: string;
+  purchaseDate?: string;
+  expiryDate?: string;
+  status: 'active' | 'inactive' | 'نشط' | 'موقوف' | 'مؤرشف';
+  enableBnpl?: boolean;
+  bnplPercentage?: number;
+  pickupFee?: number; // رسوم الالتقاط للقطعة (اختياري)
+  platformIds?: string[]; // معرفات المنصات المتاحة لهذا الصنف (فارغ أو غير محدد = كل المنصات)
+  warehouseId?: string;
+  warehouseName?: string;
+  totalStockQuantity?: number;
+  generalReorderLimit?: number;
+  warehouseStocks?: Array<{
+    warehouseId: string;
+    warehouseName?: string;
+    quantity: number;
+    reorderLimit: number;
+  }>;
+}
+
+export interface Platform {
+  id: string;
+  name: string;
+  discountPercentage: number;
+  pickupFee?: number; // رسوم الالتقاط (جنيه لكل قطعة)
+  pickupFeeMode?: 'platform' | 'product'; // طريقة رسوم الالتقاط: ثابتة على مستوى المنصة أو حسب الصنف
+  enableBnpl?: boolean;
+  bnplPercentage?: number;
+  currentBalance?: number;
+  notes: string;
+  status: 'active' | 'inactive' | 'نشطة' | 'موقوفة';
+}
+
+export interface ItemPlatformCost {
+  itemId: string;
+  platformId: string;
+  returnShippingDeduction: number;
+}
+
+export interface InvoiceLine {
+  invoiceNumber: string;
+  itemId: string;
+  itemNameAtSale: string;
+  itemPrintNameAtSale?: string;
+  barcodeAtSale?: string;
+  quantity: number;
+  salePriceAtSale: number;
+  baseUnitPrice?: number; // السعر الأساسي للوحدة (بدون زيادة BNPL)
+  customerUnitPrice?: number; // سعر البيع للعميل شاملاً زيادة BNPL
+  bnplPercent?: number; // نسبة زيادة BNPL المطبقة %
+  bnplUnitAmount?: number; // قيمة زيادة BNPL المضافة للوحدة
+  totalBnplAmount?: number; // إجمالي زيادة BNPL للسطر
+  bnplDeductionUnit?: number; // قيمة استقطاع BNPL للوحدة
+  totalBnplDeduction?: number; // إجمالي استقطاع BNPL للسطر
+  purchasePriceAtSale?: number; // للمخوّلين فقط
+  packagingCostAtSale?: number; // للمخوّلين فقط
+  taxRateAtSale?: number; // نسبة الضريبة المطبقة وقت البيع %
+  unitTaxAmount?: number; // قيمة الضريبة للقطعة
+  platformDiscountPercentAtSale: number;
+  unitDiscountValue: number;
+  unitPickupFee?: number; // رسوم الالتقاط للوحدة وقت البيع
+  totalPickupFee?: number; // إجمالي رسوم الالتقاط لهذا السطر
+  unitNet: number;
+  unitProfit?: number; // للمخوّلين فقط
+}
+
+export interface Invoice {
+  invoiceNumber: string;
+  date: string;
+  platform: string;
+  platformName?: string;
+  platformId?: string;
+  /** رقم الطلب المكتوب على المنصة (اختياري، لفواتير المنصات فقط) */
+  platformOrderId?: string;
+  customerName?: string;
+  customerId?: string;
+  cashboxName?: string;
+  cashboxId?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  idempotencyKey?: string;
+  cartId?: string;
+  paymentType?: 'نقدي' | 'آجل' | 'جزئي';
+  /** delivery = الدفع عند الاستلام (بيتسوّى من شاشة التوصيل) */
+  creditPartyType?: 'customer' | 'platform' | 'delivery';
+  creditPartyId?: string;
+  creditPartyName?: string;
+  creditDueAmount?: number;
+  creditStatus?: 'معلّقة' | 'مسددة';
+  paidAmount?: number;
+  remainingAmount?: number;
+  paymentMethod?: string;
+  referenceNumber?: string;
+  totalBeforeDiscount: number;
+  discountAmount: number;
+  pickupFeeAmount?: number; // إجمالي رسوم الالتقاط للفاتورة
+  deliveryFee?: number; // رسوم التوصيل
+  deliveryOrderId?: string; // طلب التوصيل (لو الفاتورة توصيل)
+  bnplTotalAmount?: number; // إجمالي خصم / زيادة تقسيط المنصة BNPL
+  bnplEnabled?: boolean; // حالة تفعيل BNPL على الفاتورة
+  bnplPercentApplied?: number; // نسبة BNPL المطبقة على الفاتورة %
+  commissionPercentApplied?: number; // نسبة خصم/عمولة المنصة المطبقة على الفاتورة %
+  taxAmount?: number; // إجمالي الضريبة
+  netAmount: number;
+  profit?: number; // للمخوّلين فقط
+  status: 'تم البيع' | 'مرتجع جزئي' | 'مرتجع' | 'ملغاة' | 'معلّقة' | 'مسددة';
+  notes: string;
+  createdBy: string;
+  cashierName?: string;
+  editCount?: number;
+  lastEditedAt?: string;
+  lastEditedBy?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancellationReason?: string;
+  isOffline?: boolean;
+  offlinePending?: boolean;
+  offlineCollectionPending?: boolean;
+  needsReview?: boolean;
+  reviewReasons?: string[];
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewNote?: string;
+  deviceId?: string;
+  offlineDeviceId?: string;
+  offlineProvisionalNo?: string;
+  tempInvoiceNumber?: string;
+  deviceName?: string;
+  deviceTime?: string;
+  receivedAt?: string;
+  lines: InvoiceLine[];
+}
+
+export interface InvoiceEditLogEntry {
+  id: string;
+  invoiceNumber: string;
+  editedAt: string;
+  userId: string;
+  userName: string;
+  editReason: string;
+  changesSummary: string;
+  beforeSnapshot: any;
+  afterSnapshot: any;
+  requestId?: string;
+}
+
+export interface StockMovement {
+  id: string;
+  date: string;
+  itemId: string;
+  itemName: string;
+  sku?: string;
+  barcode?: string;
+  movementType:
+    | 'بيع'
+    | 'تعديل فاتورة - استرجاع'
+    | 'تعديل فاتورة - بيع'
+    | 'مرتجع'
+    | 'تسوية جرد'
+    | 'تسوية مخزون بالإكسيل'
+    | 'تعديل يدوي'
+    | 'تعديل كمية مباشر'
+    | 'استيراد رصيد افتتاحي'
+    | 'رصيد افتتاحي بالإكسيل'
+    | 'شراء'
+    | 'مرتجع شراء'
+    | 'إلغاء فاتورة بيع'
+    | 'إلغاء فاتورة شراء'
+    | 'تحويل_صادر'
+    | 'تحويل_وارد';
+  documentNumber: string;
+  quantity: number; // الكمية المتأثرة
+  quantityBefore?: number; // الكمية قبل الحركة
+  quantityAfter?: number; // الكمية بعد الحركة
+  balanceAfter: number; // الرصيد بعد الحركة
+  unitPrice?: number;
+  totalAmount?: number;
+  party?: string; // العميل أو المورد أو المنصة
+  condition?: string; // حالة الصنف في المرتجع (يرجع المخزن / تالف)
+  reason?: string; // سبب التعديل اليدوي
+  source?: string; // مصدر الحركة (بطاقة الصنف / تسوية جرد / فاتورة...)
+  userName: string;
+  userId?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  referenceNumber?: string;
+  notes: string;
+}
+
+export interface ItemMovementRecord {
+  id: string;
+  date: string;
+  movementType: string;
+  documentNumber: string;
+  party?: string;
+  quantityIn?: number;
+  quantityOut?: number;
+  inwardQty?: number;
+  outwardQty?: number;
+  runningBalance?: number;
+  unitPrice?: number;
+  totalAmount?: number;
+  balanceAfter?: number;
+  condition?: string;
+  userName: string;
+  reason?: string;
+  notes?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+}
+
+export interface ItemMovementReport {
+  item?: Item;
+  itemId?: string;
+  itemName?: string;
+  sku?: string;
+  barcode?: string;
+  categoryName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  currentStock?: number;
+  startDate?: string;
+  endDate?: string;
+  initialBalance: number;
+  totalIn?: number;
+  totalOut?: number;
+  totalInward?: number;
+  totalOutward?: number;
+  finalBalance: number;
+  movements: ItemMovementRecord[];
+}
+
+export interface StockAdjustmentRecord {
+  id: string;
+  date: string;
+  itemId: string;
+  itemName: string;
+  itemCode?: string;
+  sku?: string;
+  barcode?: string;
+  movementType?: string;
+  quantityBefore: number;
+  previousBalance?: number;
+  adjustmentAmount?: number; // مقدار التعديل (+ أو -)
+  quantityChange?: number;
+  difference?: number;
+  quantityAfter: number;
+  newBalance?: number;
+  reason: string;
+  source: string;
+  userName: string;
+  userId?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  referenceNumber: string;
+}
+
+export interface StockAdjustmentsReport {
+  startDate?: string;
+  endDate?: string;
+  totalIncreases: number;
+  totalDecreases: number;
+  netChange?: number;
+  netAdjustment?: number;
+  totalAdjustmentsCount?: number;
+  itemId?: string;
+  adjustments?: StockAdjustmentRecord[];
+  records?: StockAdjustmentRecord[];
+}
+
+export interface CashboxEntry {
+  id: string;
+  date: string;
+  documentNumber: string;
+  entryType: 'إيراد بيع' | 'تعديل فاتورة - قيد عكسي' | 'تعديل فاتورة - قيد جديد' | 'مرتجع' | 'إلغاء بيع' | 'تحصيل آجل';
+  cashboxName: string;
+  amount: number;
+  platform: string;
+  notes: string;
+  userName: string;
+}
+
+export interface ReturnLine {
+  returnNumber: string;
+  invoiceNumber: string;
+  invoiceLineIndex: number;
+  itemId: string;
+  returnedQuantity: number;
+  returnShippingDeductionPerUnit: number;
+  totalLineReturnShippingDeduction: number;
+  itemCondition: 'يرجع المخزن' | 'تالف';
+}
+
+export interface ReturnRecord {
+  returnNumber: string;
+  invoiceNumber: string;
+  date: string;
+  returnedItemsSummary: string;
+  totalReturnShippingDeduction: number;
+  refundStatus?: 'قيد على الحساب' | 'استرداد نقدي';
+  cashboxId?: string;
+  cashboxName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  refundedAmount?: number;
+  idempotencyKey?: string;
+  returnReason: string;
+  notes: string;
+  createdBy: string;
+  lines: ReturnLine[];
+}
+
+export type DataMode = 'sheets' | 'memory';
+
+export interface ConnectionHealth {
+  healthy: boolean;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  consecutiveFailures: number;
+  lastSuccessAt: string | null;
+}
+
+export interface SystemConfig {
+  appsScriptUrl: string;
+  port: number;
+  dataMode?: DataMode;
+  persistenceMode?: 'supabase' | 'none';
+  isGoogleSheetsConnected: boolean;
+  connectionHealth?: ConnectionHealth;
+  storeName: string;
+  currency: string;
+  hasOwner: boolean;
+  hasManager: boolean;
+  setupCheckError?: boolean;
+  setupCheckErrorMessage?: string;
+  companySettings?: CompanySettings;
+  invoicePrintSettings?: InvoicePrintSettings;
+  displaySettings?: DisplaySettings;
+  taxSettings?: TaxSettings;
+  stockSettings?: StockSettings;
+  enableDeliveryFee?: boolean;
+  lastSyncTime?: string;
+  dataEpoch?: string;
+}
+
+export interface ReportsData {
+  stale?: boolean;
+  lastSyncAt?: string;
+  summary: {
+    totalRevenue: number;
+    totalCost?: number;
+    grossProfit?: number;
+    totalCommissions: number;
+    netProfit?: number;
+    invoicesCount: number;
+    returnsCount: number;
+    itemsCount: number;
+    lowStockCount: number;
+  };
+  platformStats: Array<{
+    id: string;
+    name: string;
+    discountPercentage: number;
+    ordersCount: number;
+    itemsSold: number;
+    revenue: number;
+    discountAmount: number;
+    netProfit?: number;
+  }>;
+  lowStockItems: Item[];
+  topSelling: Array<{
+    name: string;
+    quantity: number;
+    revenue: number;
+  }>;
+}
+
+export interface ItemChangeLogEntry {
+  id: string;
+  itemId: string;
+  itemName: string;
+  fieldName: string;
+  oldValue: any;
+  newValue: any;
+  userName: string;
+  timestamp: string;
+  reason?: string;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  code?: string;
+  groupId?: string;
+  phone?: string;
+  phoneSecondary?: string;
+  email?: string;
+  address?: string;
+  taxNumber?: string;
+  commercialRecord?: string;
+  openingBalance: number;
+  currentBalance: number;
+  status: 'active' | 'inactive' | 'نشط' | 'مؤرشف';
+  notes?: string;
+  createdAt: string;
+}
+
+export interface SupplierGroup {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+}
+
+export interface PurchaseLine {
+  invoiceNumber: string;
+  lineIndex: number;
+  itemId: string;
+  sku?: string;
+  itemName: string;
+  quantity: number;
+  receivedQuantity: number;
+  unitCost: number;
+  packagingCost?: number;
+  taxRate: number;
+  taxAmount: number;
+  discountAmount: number;
+  totalLine: number;
+  barcode?: string;
+  notes?: string;
+}
+
+export interface PurchaseInvoice {
+  invoiceNumber: string;
+  supplierInvoiceNumber?: string;
+  date: string;
+  supplierId: string;
+  supplierName: string;
+  subtotal: number;
+  taxAmount: number;
+  discountAmount: number;
+  shippingFee: number;
+  netTotal: number;
+  totalAmount?: number;
+  netAmount?: number;
+  paidAmount: number;
+  remainingAmount: number;
+  paymentStatus: 'مدفوع بالكامل' | 'مدفوع جزئياً' | 'آجل';
+  paymentMethod: 'نقدي' | 'تحويل بنكي' | 'شيك' | 'آجل';
+  paymentType?: 'نقدي' | 'آجل' | 'جزئي' | string;
+  cashboxId?: string;
+  cashboxName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  receivingStatus: 'مستلم بالكامل' | 'مستلم جزئياً' | 'قيد الشحن' | 'ملغاة';
+  createdBy: string;
+  userName?: string;
+  notes?: string;
+  createdAt: string;
+  idempotencyKey?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancellationReason?: string;
+  lines: PurchaseLine[];
+}
+
+export type Purchase = PurchaseInvoice;
+
+export interface PurchaseReturnLine {
+  returnNumber: string;
+  lineIndex: number;
+  itemId: string;
+  itemName: string;
+  quantity: number;
+  unitCost: number;
+  taxAmount: number;
+  totalLine: number;
+  condition: 'سليم' | 'تالف';
+}
+
+export interface PurchaseReturn {
+  returnNumber: string;
+  purchaseInvoiceNumber: string;
+  date: string;
+  supplierId: string;
+  supplierName: string;
+  totalAmount: number;
+  taxAmount: number;
+  netTotal: number;
+  refundStatus: 'استرداد نقدي' | 'قيد على الحساب';
+  cashboxId?: string;
+  cashboxName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  refundedAmount?: number;
+  userName?: string;
+  reason: string;
+  createdBy: string;
+  notes?: string;
+  idempotencyKey?: string;
+  lines: PurchaseReturnLine[];
+}
+
+export interface SupplierLedgerEntry {
+  id: string;
+  date: string;
+  supplierId: string;
+  supplierName: string;
+  transactionType: 'فاتورة شراء' | 'سداد فاتورة شراء' | 'مرتجع شراء' | 'استرداد مرتجع شراء' | 'سند صرف' | 'سند قبض' | 'رصيد افتتاحي' | 'تسوية' | 'إلغاء فاتورة شراء';
+  documentNumber: string;
+  debit: number; // مدين (لنا)
+  credit: number; // دائن (علينا)
+  balanceAfter: number;
+  statement: string;
+  userName: string;
+  notes?: string;
+}
+
+export interface Customer {
+  id: string;
+  name: string;
+  code?: string;
+  groupId?: string;
+  phone?: string;
+  phoneSecondary?: string;
+  email?: string;
+  city?: string;
+  address?: string;
+  /** منطقة التوصيل (لو «حسب المنطقة» شغال) */
+  zoneId?: string;
+  taxNumber?: string;
+  commercialRecord?: string;
+  creditLimit?: number;
+  openingBalance: number;
+  currentBalance: number;
+  status: 'active' | 'inactive' | 'نشط' | 'مؤرشف';
+  notes?: string;
+  createdAt: string;
+}
+
+export interface CustomerGroup {
+  id: string;
+  name: string;
+  discountPercent: number;
+  description?: string;
+  createdAt: string;
+}
+
+export interface CustomerLedgerEntry {
+  id: string;
+  date: string;
+  customerId: string;
+  customerName: string;
+  transactionType: 'فاتورة بيع' | 'فاتورة آجل' | 'تحصيل' | 'فرق تحصيل' | 'سداد فاتورة بيع' | 'مرتجع بيع' | 'سند قبض' | 'سند صرف' | 'رصيد افتتاحي' | 'تسوية' | 'إلغاء فاتورة بيع' | string;
+  documentNumber: string;
+  debit: number; // مدين (عليه)
+  credit: number; // دائن (له)
+  balanceAfter: number;
+  statement: string;
+  userName: string;
+  notes?: string;
+}
+
+export interface PartyLedgerEntry {
+  id: string;
+  date: string;
+  partyType: 'customer' | 'platform';
+  partyId: string;
+  partyName: string;
+  transactionType: 'فاتورة آجل' | 'تحصيل' | 'فرق تحصيل' | 'تحصيل مكرر' | string;
+  documentNumber: string;
+  debit: number; // مدين (على الطرف)
+  credit: number; // دائن (للطرف)
+  balanceAfter: number;
+  statement: string;
+  userName: string;
+  notes?: string;
+  needsReview?: boolean;
+  reviewReasons?: string[];
+}
+
+export interface CollectCreditPayload {
+  partyType: 'customer' | 'platform';
+  partyId: string;
+  invoiceNumbers: string[];
+  receivedAmount: number;
+  cashboxId: string;
+  confirmDifference?: boolean;
+  notes?: string;
+  idempotencyKey?: string;
+  isOffline?: boolean;
+  isOfflineSync?: boolean;
+  deviceId?: string;
+  offlineDeviceId?: string;
+  deviceName?: string;
+  deviceTime?: string;
+}
+
+export interface CollectCreditResult {
+  success: boolean;
+  statusCode?: number;
+  code?: string;
+  duplicate?: boolean;
+  requiresConfirmation?: boolean;
+  collectionId?: string;
+  totalDue?: number;
+  receivedAmount?: number;
+  difference?: number;
+  partyBalance?: number;
+  settledInvoices?: string[];
+  duplicateCollectionInvoices?: string[];
+  needsReview?: boolean;
+  reviewReasons?: string[];
+  ledgerEntriesCreated?: PartyLedgerEntry[];
+  error?: string;
+}
+
+export interface Cashbox {
+  id: string;
+  name: string;
+  type?: 'نقدية محلية' | 'حساب بنكي' | 'محفظة إلكترونية' | 'خزينة وسيطة';
+  currency: string;
+  openingBalance: number;
+  currentBalance: number;
+  responsibleUserName?: string;
+  status: 'active' | 'inactive' | 'نشطة' | 'موقوفة';
+  notes?: string;
+  createdAt: string;
+}
+
+export interface DashboardCashbox {
+  id: string;
+  name: string;
+  type?: 'نقدية محلية' | 'حساب بنكي' | 'محفظة إلكترونية' | 'خزينة وسيطة';
+  currency: string;
+  currentBalance: number;
+  status: 'active' | 'inactive' | 'نشطة' | 'موقوفة';
+  permissionType: string;
+}
+
+export interface CashboxTransaction {
+  id: string;
+  date: string;
+  cashboxId: string;
+  cashboxName: string;
+  type: 'إيراد مبيعات' | 'تحصيل آجل' | 'مرتجع مبيعات' | 'سداد مشتريات' | 'استرداد مرتجع مشتريات' | 'سند قبض عميل' | 'سند صرف مورد' | 'سند صرف عميل' | 'استرداد مورد' | 'مصروفات' | 'إيداع' | 'سحب' | 'تحويل بين الخزائن' | 'قيد عكسي إلغاء مبيعات' | 'قيد عكسي إلغاء مشتريات' | 'تحصيل توصيل' | 'مستحقات طيار' | 'رسوم شركة شحن';
+  transactionType?: string;
+  documentNumber: string;
+  amount: number;
+  balanceAfter: number;
+  party?: string;
+  statement: string;
+  userName: string;
+  notes?: string;
+}
+
+export interface ReconciliationItem {
+  id: string;
+  documentType: 'فاتورة بيع' | 'فاتورة شراء' | 'مرتجع بيع' | 'مرتجع شراء' | 'سند عميل' | 'سند مورد';
+  documentNumber: string;
+  date: string;
+  partyName: string;
+  totalAmount: number;
+  paymentType?: string;
+  status: 'مطابق' | 'غير مرحل';
+  details: string;
+  missingCashbox: boolean;
+  missingLedger: boolean;
+  missingStock: boolean;
+  isHistorical: boolean;
+  warehouseId?: string;
+  warehouseName?: string;
+}
+
+export interface CashboxTransfer {
+  id?: string;
+  transferNumber: string;
+  date: string;
+  fromCashboxId: string;
+  fromCashboxName: string;
+  toCashboxId: string;
+  toCashboxName: string;
+  amount: number;
+  fee: number;
+  transferFee?: number;
+  netReceived: number;
+  transferredBy: string;
+  userName?: string;
+  createdBy?: string;
+  receivedBy?: string;
+  status: 'مكتمل' | 'معلق';
+  statement?: string;
+  notes?: string;
+}
+
+export interface UserCashboxAssignment {
+  id: string;
+  userId: string;
+  userName: string;
+  cashboxId: string;
+  cashboxName: string;
+  permissionType: 'إيداع فقط' | 'سحب فقط' | 'إيداع وسحب' | 'إدارة كاملة';
+  operations?: ('sale' | 'return' | 'receipt' | 'payment' | 'transfer')[];
+  isDefaultSale?: boolean;
+  isDefaultReturn?: boolean;
+  isDefault: boolean;
+  status: 'active' | 'inactive' | 'نشطة' | 'موقوفة';
+  assignedAt?: string;
+}
+
+export interface ImportBatch {
+  id: string;
+  timestamp: string;
+  dataType: string;
+  sourceName: string;
+  totalRows: number;
+  successRows: number;
+  failedRows: number;
+  userName: string;
+  notes?: string;
+  errorLog?: string;
+}
+
+export type PageType =
+  | 'dashboard'
+  | 'pos'
+  | 'items'
+  | 'categories'
+  | 'platforms'
+  | 'invoices'
+  | 'credit_collection'
+  | 'returns'
+  | 'purchases'
+  | 'customers'
+  | 'cashboxes'
+  | 'reports'
+  | 'settings'
+  | 'permissions'
+  | 'audit'
+  | 'bulk_edit_excel'
+  | 'sync'
+  | 'warehouses'
+  | 'warehouse_transfers'
+  | 'warehouse_excel_transfer'
+  | 'warehouse_dispatch_orders'
+  | 'visitor'
+  | 'label_print';
+
+export interface BnplReportLine {
+  id: string;
+  date: string;
+  invoiceNumber: string;
+  platformId: string;
+  platformName: string;
+  itemId: string;
+  itemName: string;
+  itemBarcode?: string;
+  quantity: number;
+  baseUnitPrice: number;
+  bnplPercent: number;
+  customerUnitPrice: number;
+  priceIncrease: number;
+  bnplAmount: number;
+  commission: number;
+  net: number;
+}
+
+export interface BnplReportSummary {
+  invoicesCount: number;
+  piecesCount: number;
+  totalCustomerPaid: number;
+  totalPriceIncrease: number;
+  totalBnplAmount: number;
+  totalBaseAmount: number;
+  totalCommission: number;
+  totalLinesNet: number;
+  totalInvoicesNetInCashbox: number;
+}
+
+export interface BnplReport {
+  summary: BnplReportSummary;
+  rows: BnplReportLine[];
+  groupBy: 'item' | 'platform' | 'invoice';
+}
+
+export interface PlatformReportSummary {
+  platformId: string;
+  platformName: string;
+  invoicesCount: number;
+  totalGrossSales: number; // إجمالي المبيعات (سعر العميل)
+  totalPriceIncrease?: number; // إجمالي زيادة السعر (BNPL)
+  totalBnplAmount: number; // إجمالي استقطاع BNPL
+  totalBaseSales: number; // إجمالي المبيعات بالسعر الأساسي
+  totalCommission: number; // العمولات
+  totalPickupFees: number;
+  totalDeliveryFees: number;
+  totalNet: number; // الصافي
+  estimatedProfit: number; // الربح التقديري
+  profitMargin: number; // نسبة الربح (الربح ÷ المبيعات بالسعر الأساسي) %
+  averageInvoiceValue: number; // متوسط الفاتورة
+  pendingDeferredBalance: number; // رصيد الآجل المعلّق على المنصة
+}
+
+export interface PlatformReportTopItem {
+  itemId: string;
+  itemName: string;
+  barcode?: string;
+  quantity: number;
+  revenue: number;
+  profit: number;
+}
+
+export interface PlatformReportStagnantItem {
+  itemId: string;
+  itemName: string;
+  barcode?: string;
+  stockQuantity: number;
+  salePrice: number;
+  lastSaleDate: string | null;
+  daysSinceLastSale: number | null;
+}
+
+export interface PlatformReportDaySales {
+  date: string;
+  invoicesCount: number;
+  grossSales: number;
+  netSales: number;
+}
+
+export interface PlatformReport {
+  summary: PlatformReportSummary;
+  topByQuantity: PlatformReportTopItem[];
+  topByRevenue: PlatformReportTopItem[];
+  stagnantItems: PlatformReportStagnantItem[];
+  stagnantDays: number;
+  dailySales: PlatformReportDaySales[];
+  dateRange: { from: string | null; to: string | null };
+}
+
+export type BulkEditOperationType =
+  | 'sale_price'
+  | 'purchase_price'
+  | 'primary_barcode'
+  | 'add_secondary_barcode'
+  | 'stock_quantity'
+  | 'reorder_limit'
+  | 'name'
+  | 'print_name'
+  | 'barcode_sku'
+  | 'notes'
+  | 'category'
+  | 'platforms'
+  | 'bnpl'
+  | 'pickup_fee'
+  | 'min_price'
+  | 'packaging_cost'
+  | 'tax_rate'
+  | 'supplier'
+  | 'unit'
+  | 'status'
+  | 'image_url'
+  | 'add_items'
+  | 'delete_items';
+
+export type BulkEditPriceOperationType = BulkEditOperationType;
+
+export type BulkEditExcelRowStatus = 'will_update' | 'unchanged' | 'error';
+
+export interface BulkEditExcelPreviewRow {
+  rowNumber: number;
+  itemId?: string;
+  itemName: string;
+  inputName: string;
+  codeOrBarcode?: string;
+  matchedBy?: 'code_barcode' | 'name';
+  currentPrice: number | null;
+  newPrice: number | null;
+  currentValueDisplay?: string;
+  newValueDisplay?: string;
+  status: BulkEditExcelRowStatus;
+  reason?: string;
+  warning?: string;
+  rawValues?: Record<string, any>;
+}
+
+export interface BulkEditNewCategoryCount {
+  id?: string;
+  name: string;
+  itemsCount: number;
+}
+
+export interface BulkEditExcelSummary {
+  totalRows: number;
+  willUpdateCount: number;
+  unchangedCount: number;
+  errorCount: number;
+  warningCount?: number;
+  zeroSalePriceCount?: number;
+  zeroSalePriceWarning?: string;
+  newCategories?: BulkEditNewCategoryCount[];
+}
+
+export interface BulkEditExcelPreviewResult {
+  success: boolean;
+  statusCode?: number;
+  operationType?: BulkEditOperationType;
+  fileName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  summary?: BulkEditExcelSummary;
+  rows?: BulkEditExcelPreviewRow[];
+  newCategories?: BulkEditNewCategoryCount[];
+  zeroSalePriceCount?: number;
+  zeroSalePriceWarning?: string;
+  warnings?: string[];
+  error?: string;
+}
+
+export interface BulkEditUndoStatus {
+  success?: boolean;
+  available: boolean;
+  batchId?: string;
+  operationType?: BulkEditOperationType;
+  operationLabel?: string;
+  fileName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  affectedCount?: number;
+  executedAt?: string;
+  executedBy?: string;
+  error?: string;
+}
+
+export type BulkEditExcelUndoStatus = BulkEditUndoStatus;
+
+export interface BulkEditUndoResult {
+  success: boolean;
+  statusCode?: number;
+  batchId?: string;
+  operationType?: BulkEditOperationType;
+  operationLabel?: string;
+  fileName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  restoredCount: number;
+  message?: string;
+  error?: string;
+}
+
+export type BulkEditExcelUndoResult = BulkEditUndoResult;
+
+export interface BulkEditExcelExecuteResult {
+  success: boolean;
+  statusCode?: number;
+  operationType?: BulkEditOperationType;
+  fileName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  batchId?: string;
+  updatedCount: number;
+  unchangedCount: number;
+  errorCount: number;
+  warningCount?: number;
+  zeroSalePriceCount?: number;
+  zeroSalePriceWarning?: string;
+  warnings?: string[];
+  summary?: BulkEditExcelSummary;
+  rows?: BulkEditExcelPreviewRow[];
+  newCategories?: BulkEditNewCategoryCount[];
+  undoAvailable?: boolean;
+  error?: string;
+  message?: string;
+}
+
+export interface WarehouseTransferLine {
+  itemId: string;
+  itemName: string;
+  barcode?: string;
+  sku?: string;
+  notes?: string;
+  unit: string;
+  quantity: number;
+  purchasePriceAtTransfer?: number;
+  lineTotalPurchase?: number;
+  fromStockBefore: number;
+  fromStockAfter: number;
+  toStockBefore: number;
+  toStockAfter: number;
+}
+
+export interface WarehouseDispatchOrder {
+  id: string;
+  dispatchNumber: string;
+  date: string;
+  fromWarehouseId: string;
+  fromWarehouseName: string;
+  toWarehouseId: string;
+  toWarehouseName: string;
+  userId: string;
+  userName: string;
+  itemsCount: number;
+  totalQuantity: number;
+  totalPurchaseValue?: number;
+  notes?: string;
+  idempotencyKey: string;
+  lines: WarehouseTransferLine[];
+}
+
+export interface WarehouseTransferInsufficientItem {
+  itemId: string;
+  itemName: string;
+  requested: number;
+  available: number;
+}
+
+export type UnsoldCartReportEvent =
+  | 'open'
+  | 'remove'
+  | 'reduce'
+  | 'clear'
+  | 'page_close'
+  | 'logout'
+  | 'crash'
+  | 'other';
+
+export type UnsoldCartReportStatus = 'open' | 'abandoned' | 'sold';
+
+export interface UnsoldCartItemRow {
+  cartId: string;
+  cartStatus: UnsoldCartReportStatus;
+  cartStatusLabel: string;
+  event: UnsoldCartReportEvent;
+  eventLabel: string;
+  itemId: string;
+  itemName: string;
+  barcode: string;
+  quantity: number;
+  unitPrice: number;
+  value: number;
+  fromQty: number | null;
+  toQty: number | null;
+  at: string;
+  userId: string;
+  userName: string;
+  deviceId: string;
+  warehouseName: string;
+  platform: string;
+  invoiceNumber: string;
+  receivedLate: boolean;
+}
+
+export interface UnsoldCartJournalAlert {
+  id: string;
+  type: 'new_device' | 'sequence_gap';
+  typeLabel: string;
+  deviceId: string;
+  userId: string;
+  userName: string;
+  at: string;
+  detail: string;
+}
+
+export interface UnsoldCartUserSummary {
+  userId: string;
+  userName: string;
+  rows: number;
+  quantity: number;
+  value: number;
+}
+
+export interface UnsoldCartItemsReport {
+  rows: UnsoldCartItemRow[];
+  summary: {
+    rows: number;
+    quantity: number;
+    value: number;
+    openCarts: number;
+    byUser: UnsoldCartUserSummary[];
+  };
+  alerts: UnsoldCartJournalAlert[];
+}
+
+export type BankLinkTemplateDirection = 'in' | 'out' | 'auto' | 'ignore';
+
+export interface BankLinkTemplate {
+  id: string;
+  name: string;
+  sender: string;
+  pattern: string;
+  direction: BankLinkTemplateDirection;
+  enabled: boolean;
+}
+
+export interface BankLinkMessageReading {
+  kind: 'transaction' | 'ignored' | 'unknown';
+  note: string;
+  direction: 'in' | 'out' | 'unknown';
+  amount: number | null;
+  balance: number | null;
+  accountSuffix: string;
+  counterparty: string;
+  reference: string;
+  otherNumbers: number[];
+  fee?: number;
+  readBy?: 'template' | 'auto';
+  templateId?: string;
+}
+
+export interface BankLinkEntry {
+  messageId: string;
+  mergedMessageIds: string[];
+  sender: string;
+  at: string;
+  direction: 'in' | 'out' | 'unknown';
+  amount: number;
+  fee: number;
+  balanceAfter: number | null;
+  counterparty: string;
+  reference: string;
+  verifiedBy: 'balance' | 'baseline' | 'none';
+  corrections: string[];
+  state: 'baseline' | 'needs_review' | 'matched' | 'unclassified';
+  stateLabel: string;
+  matchedTxId: string;
+  createdTxId: string;
+}
+
+export interface BankLinkPendingTx {
+  id: string;
+  date: string;
+  amount: number;
+  statement: string;
+  documentNumber: string;
+  userName: string;
+  overdue: boolean;
+}
+
+export interface BankLinkGap {
+  beforeMessageId: string;
+  at: string;
+  amount: number;
+}
+
+export interface BankLinkUnknownMessage {
+  messageId: string;
+  note: string;
+}
+
+export interface BankLinkAccountOverview {
+  id: string;
+  name: string;
+  cashboxId: string;
+  cashboxName: string;
+  cashboxMissing: boolean;
+  enabled: boolean;
+  senders: string[];
+  accountSuffix: string;
+  matchWindowMinutes: number;
+  createdAt: string;
+  lastMessageAt: string;
+  bankBalance: number | null;
+  lastConfirmedBalance: number | null;
+  bookBalance: number | null;
+  pendingTotal: number;
+  pending: BankLinkPendingTx[];
+  gaps: BankLinkGap[];
+  unknownMessages: BankLinkUnknownMessage[];
+  entries: BankLinkEntry[];
+}
+
+export interface BankLinkUnknownSender {
+  sender: string;
+  count: number;
+  lastAt: string;
+}
+
+export interface BankLinkDevice {
+  id: string;
+  lastSeenAt: string;
+  battery: number | null;
+  online: boolean;
+}
+
+export interface BankLinkOverviewResponse {
+  success: boolean;
+  accounts: BankLinkAccountOverview[];
+  unknownSenders: BankLinkUnknownSender[];
+  devices: BankLinkDevice[];
+  intakeKey: string;
+  intakePath: string;
+  heartbeatPath: string;
+  canManageTemplates: boolean;
+  templates: BankLinkTemplate[];
+  error?: string;
+}
+
+export interface ManualBalanceRequest {
+  accountId: string;
+  accountName: string;
+  cashboxName: string;
+  dueAt: string;
+  kind: 'baseline' | 'scheduled';
+  mandatory: boolean;
+  state: 'due' | 'postponed';
+  canPostpone: boolean;
+  postponedUntil: string;
+  blocking: boolean;
+}
+
+export interface ManualBalanceAlert {
+  id: string;
+  accountId: string;
+  accountName: string;
+  cashboxId?: string;
+  at: string;
+  enteredBalance: number;
+  bookBalanceBefore: number;
+  difference: number;
+  userName: string;
+}
+
+export interface ManualBalanceEntry {
+  id: string;
+  accountId?: string;
+  accountName?: string;
+  cashboxId?: string;
+  at: string;
+  kind: 'baseline' | 'scheduled' | 'voluntary';
+  enteredBalance: number;
+  bookBalanceBefore: number;
+  difference: number;
+  txId?: string;
+  userId?: string;
+  userName: string;
+  reviewed: boolean;
+  reviewedBy: string;
+  reviewedAt: string;
+}
+
+export interface ManualBalanceResponsible {
+  id: string;
+  name: string;
+  missing: boolean;
+}
+
+export interface ManualBalanceUserOption {
+  id: string;
+  name: string;
+  username: string;
+  role: string;
+}
+
+export interface ManualBalanceAccountOverview {
+  id: string;
+  name: string;
+  cashboxId: string;
+  cashboxName: string;
+  cashboxMissing: boolean;
+  enabled: boolean;
+  responsibleUserIds: string[];
+  responsibles: ManualBalanceResponsible[];
+  scheduleType: 'daily' | 'weekdays';
+  time: string;
+  weekdays: number[];
+  mandatory: boolean;
+  timezone?: string;
+  lastEntryAt: string;
+  lastBalance: number | null;
+  bookBalance: number | null;
+  sinceLastTotal: number | null;
+  nextDueAt: string;
+  request: ManualBalanceRequest | null;
+  unreviewedCount: number;
+  entries: ManualBalanceEntry[];
+}
+
+export interface ManualBalanceRequestsResponse {
+  success: boolean;
+  requests: ManualBalanceRequest[];
+  alerts: ManualBalanceAlert[];
+  postponeMinutes: number;
+  error?: string;
+}
+
+export interface ManualBalanceOverviewResponse {
+  success: boolean;
+  accounts: ManualBalanceAccountOverview[];
+  alerts: ManualBalanceAlert[];
+  users: ManualBalanceUserOption[];
+  postponeMinutes: number;
+  error?: string;
+}
+
+export type DefaultSaleMode = 'last' | 'direct' | 'platform';
+export type DefaultSelectionMode = 'first' | 'fixed' | 'manual';
+export type DefaultCustomerSelectionMode = 'none' | 'fixed' | 'manual';
+
+export interface SalesRules {
+  defaultSaleMode: DefaultSaleMode;
+  platformSelection: DefaultSelectionMode;
+  defaultPlatformId: string;
+  customerSelection: DefaultCustomerSelectionMode;
+  defaultCustomerId: string;
+  allowZeroPriceSale: boolean;
+  allowBelowCostSale: boolean;
+  platformAlwaysCredit: boolean;
+  updatedAt: string;
+  updatedBy: string;
+  /** اسم المنصة/العميل المحدد (للعرض فقط) */
+  defaultPlatformName?: string;
+  defaultCustomerName?: string;
+  effectivePlatformSelection: DefaultSelectionMode;
+  effectiveCustomerSelection: DefaultCustomerSelectionMode;
+  defaultPlatformMissing: boolean;
+  defaultCustomerMissing: boolean;
+}
+
+export interface InvoiceNumberingSettings {
+  prefix: string;
+  datePart: 'none' | 'year' | 'month' | 'day';
+  separator: '-' | '/' | '';
+  digits: number;
+  suffix: string;
+  resetPeriod: 'never' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+  startAt: number;
+  platformOrderDuplicates: 'block' | 'allow';
+  updatedAt: string;
+  updatedBy: string;
+}
+export interface InvoiceNumberingView {
+  settings: InvoiceNumberingSettings;
+  counter: { periodKey: string; last: number; resetAt: string; resetBy: string };
+  nextNumber: string;
+  mayRepeat: boolean;
+  mayRepeatNote: string;
+}
+
+export interface VisitorSlide {
+  id: string;
+  url: string;
+  imageUrl?: string;
+  order?: number;
+  createdAt: string;
+}
+
+export interface VisitorDisplaySettings {
+  slideSeconds: number;
+  resultSeconds: number;
+  showWelcome: boolean;
+  welcomeText: string;
+  showLogo: boolean;
+  slides: VisitorSlide[];
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface VisitorProduct {
+  name: string;
+  price: number;
+  salePrice?: number;
+  unit: string;
+  imageUrl: string;
+}
+
+export interface ImagesStorageStatus {
+  success?: boolean;
+  storageEnabled: boolean;
+  inline: {
+    total: number;
+    byCollection: Record<string, number>;
+  };
+}
+
+export interface ImagesMigrationResult {
+  success?: boolean;
+  moved: number;
+  failed: number;
+  remaining: number;
+  errors: string[];
+}
+
+
+
+
+
+
+
+
