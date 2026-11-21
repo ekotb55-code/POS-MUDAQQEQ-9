@@ -5,6 +5,7 @@ import { FormulaVerifierModal } from '../components/FormulaVerifierModal';
 import { CameraBarcodeScannerModal } from '../components/CameraBarcodeScannerModal';
 import { PosInvoicePanel, PosSaleMode } from '../components/pos/PosInvoicePanel';
 import { PosProductGrid } from '../components/pos/PosProductGrid';
+import { PosVisibleCategoriesPicker } from '../components/pos/PosVisibleCategoriesPicker';
 import { printReceipt } from '../utils/printReceipt';
 import { generateIdempotencyKey } from '../utils/idempotency';
 import { DateRangeFilter } from '../components/DateRangeFilter';
@@ -291,7 +292,7 @@ interface POSPageProps {
   invoices?: Invoice[];
   onPrintInvoice?: (invoice: Invoice, isReprint?: boolean, autoPrint?: boolean) => void;
   onOpenMobileMenu?: () => void;
-  onNavigateMain?: (page: PageType) => void;
+  onNavigateMain?: (page: PageType, tab?: string) => void;
 }
 
 export const POSPage: React.FC<POSPageProps> = ({
@@ -336,9 +337,13 @@ export const POSPage: React.FC<POSPageProps> = ({
   const [draftSharedDisplay, setDraftSharedDisplay] = useState<{
     showItemImages: boolean;
     posLayout: 'grid' | 'compact' | 'list';
+    posVisibleCategoryIds: string[];
   }>(() => ({
     showItemImages: displaySettings?.showItemImages !== false,
-    posLayout: displaySettings?.posLayout === 'list' ? 'list' : 'grid'
+    posLayout: displaySettings?.posLayout === 'list' ? 'list' : 'grid',
+    posVisibleCategoryIds: Array.isArray(displaySettings?.posVisibleCategoryIds)
+      ? displaySettings.posVisibleCategoryIds
+      : []
   }));
   const [isUiAppearanceOpen, setIsUiAppearanceOpen] = useState<boolean>(false);
   const uiAppearanceMenuRef = useRef<HTMLDivElement | null>(null);
@@ -347,10 +352,13 @@ export const POSPage: React.FC<POSPageProps> = ({
     if (!isUiAppearanceOpen) {
       setDraftSharedDisplay({
         showItemImages: displaySettings?.showItemImages !== false,
-        posLayout: displaySettings?.posLayout === 'list' ? 'list' : 'grid'
+        posLayout: displaySettings?.posLayout === 'list' ? 'list' : 'grid',
+        posVisibleCategoryIds: Array.isArray(displaySettings?.posVisibleCategoryIds)
+          ? displaySettings.posVisibleCategoryIds
+          : []
       });
     }
-  }, [displaySettings?.showItemImages, displaySettings?.posLayout, isUiAppearanceOpen]);
+  }, [displaySettings?.showItemImages, displaySettings?.posLayout, displaySettings?.posVisibleCategoryIds, isUiAppearanceOpen]);
 
   useEffect(() => {
     const handlePrefsUpdate = (e: Event) => {
@@ -374,7 +382,10 @@ export const POSPage: React.FC<POSPageProps> = ({
     const saved = readUiPrefs();
     const savedShared = {
       showItemImages: displaySettings?.showItemImages !== false,
-      posLayout: (displaySettings?.posLayout === 'list' ? 'list' : 'grid') as 'grid' | 'list'
+      posLayout: (displaySettings?.posLayout === 'list' ? 'list' : 'grid') as 'grid' | 'list',
+      posVisibleCategoryIds: Array.isArray(displaySettings?.posVisibleCategoryIds)
+        ? displaySettings.posVisibleCategoryIds
+        : []
     };
     setPosUiPrefs(saved);
     setDraftSharedDisplay(savedShared);
@@ -390,7 +401,10 @@ export const POSPage: React.FC<POSPageProps> = ({
         const saved = readUiPrefs();
         const savedShared = {
           showItemImages: displaySettings?.showItemImages !== false,
-          posLayout: (displaySettings?.posLayout === 'list' ? 'list' : 'grid') as 'grid' | 'list'
+          posLayout: (displaySettings?.posLayout === 'list' ? 'list' : 'grid') as 'grid' | 'list',
+          posVisibleCategoryIds: Array.isArray(displaySettings?.posVisibleCategoryIds)
+            ? displaySettings.posVisibleCategoryIds
+            : []
         };
         setPosUiPrefs(saved);
         setDraftSharedDisplay(savedShared);
@@ -400,7 +414,7 @@ export const POSPage: React.FC<POSPageProps> = ({
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isUiAppearanceOpen, displaySettings?.showItemImages, displaySettings?.posLayout]);
+  }, [isUiAppearanceOpen, displaySettings?.showItemImages, displaySettings?.posLayout, displaySettings?.posVisibleCategoryIds]);
 
   const updatePosUiPref = (patch: Partial<UiPrefs>) => {
     const next = { ...posUiPrefs, ...patch };
@@ -408,7 +422,9 @@ export const POSPage: React.FC<POSPageProps> = ({
     applyUiPrefs(next, true, document.documentElement, draftSharedDisplay);
   };
 
-  const updateDraftSharedDisplay = (patch: Partial<{ showItemImages: boolean; posLayout: 'grid' | 'compact' | 'list' }>) => {
+  const updateDraftSharedDisplay = (
+    patch: Partial<{ showItemImages: boolean; posLayout: 'grid' | 'compact' | 'list'; posVisibleCategoryIds: string[] }>
+  ) => {
     const next = { ...draftSharedDisplay, ...patch };
     setDraftSharedDisplay(next);
     applyUiPrefs(posUiPrefs, true, document.documentElement, next);
@@ -427,13 +443,24 @@ export const POSPage: React.FC<POSPageProps> = ({
     if (canCustomizeDisplay && onUpdateDisplaySettings) {
       const origShowImages = displaySettings?.showItemImages !== false;
       const origLayout = displaySettings?.posLayout === 'list' ? 'list' : 'grid';
+      const origCatIds = Array.isArray(displaySettings?.posVisibleCategoryIds)
+        ? displaySettings.posVisibleCategoryIds
+        : [];
+      const nextCatIds = Array.isArray(draftSharedDisplay.posVisibleCategoryIds)
+        ? draftSharedDisplay.posVisibleCategoryIds
+        : [];
+      const catsChanged =
+        origCatIds.length !== nextCatIds.length ||
+        origCatIds.some((id) => !nextCatIds.includes(id));
       if (
         draftSharedDisplay.showItemImages !== origShowImages ||
-        draftSharedDisplay.posLayout !== origLayout
+        draftSharedDisplay.posLayout !== origLayout ||
+        catsChanged
       ) {
         await onUpdateDisplaySettings({
           showItemImages: draftSharedDisplay.showItemImages,
-          posLayout: draftSharedDisplay.posLayout === 'list' ? 'list' : 'grid'
+          posLayout: draftSharedDisplay.posLayout === 'list' ? 'list' : 'grid',
+          posVisibleCategoryIds: nextCatIds
         });
       }
     }
@@ -2695,7 +2722,10 @@ export const POSPage: React.FC<POSPageProps> = ({
                       setPosUiPrefs(readUiPrefs());
                       setDraftSharedDisplay({
                         showItemImages: displaySettings?.showItemImages !== false,
-                        posLayout: displaySettings?.posLayout === 'list' ? 'list' : 'grid'
+                        posLayout: displaySettings?.posLayout === 'list' ? 'list' : 'grid',
+                        posVisibleCategoryIds: Array.isArray(displaySettings?.posVisibleCategoryIds)
+                          ? displaySettings.posVisibleCategoryIds
+                          : []
                       });
                       setIsUiAppearanceOpen(true);
                     }
@@ -2713,7 +2743,7 @@ export const POSPage: React.FC<POSPageProps> = ({
                   <div
                     dir="rtl"
                     data-testid="pos-ui-appearance-popover"
-                    className="absolute left-0 mt-1.5 z-50 w-72 sm:w-80 max-w-[calc(92vw/var(--app-zoom,1))] rounded-2xl bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border-color)] shadow-xl p-3.5 space-y-3 text-xs"
+                    className="absolute left-0 mt-1.5 z-50 w-72 sm:w-80 max-w-[calc(92vw/var(--app-zoom,1))] max-h-[82vh] overflow-y-auto custom-scrollbar rounded-2xl bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border-color)] shadow-xl p-3.5 space-y-3 text-xs"
                   >
                     <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-2">
                       <span className="font-extrabold text-[var(--text-primary)]">شكل الشاشة (لهذا الجهاز)</span>
@@ -2856,6 +2886,19 @@ export const POSPage: React.FC<POSPageProps> = ({
                             );
                           })}
                         </div>
+                        <div className="pt-2 border-t border-[var(--border-subtle)] space-y-1.5">
+                          <div className="font-bold text-[11px] text-[var(--text-secondary)]">
+                            التصنيفات الظاهرة في نقطة البيع
+                          </div>
+                          <PosVisibleCategoriesPicker
+                            categories={effectiveCategories}
+                            selectedCategoryIds={draftSharedDisplay.posVisibleCategoryIds}
+                            onChange={(nextIds) =>
+                              updateDraftSharedDisplay({ posVisibleCategoryIds: nextIds })
+                            }
+                            compact
+                          />
+                        </div>
                       </div>
                     )}
 
@@ -2948,11 +2991,21 @@ export const POSPage: React.FC<POSPageProps> = ({
             <PosProductGrid
               items={platformFilteredItems}
               posCategories={posCategories}
+              selectedCategoryIds={
+                isUiAppearanceOpen
+                  ? draftSharedDisplay.posVisibleCategoryIds
+                  : (displaySettings?.posVisibleCategoryIds ?? [])
+              }
               allowNegativeStockSale={effectiveAllowNegativeStock}
               onAddToCart={addToCart}
               posLayout={isUiAppearanceOpen ? draftSharedDisplay.posLayout : (displaySettings?.posLayout || 'grid')}
               canCustomizeDisplay={canCustomizeDisplay}
               previewUiPrefs={isUiAppearanceOpen ? posUiPrefs : undefined}
+              onOpenCategorySettings={
+                canCustomizeDisplay
+                  ? () => onNavigateMain?.('settings', 'sales')
+                  : undefined
+              }
               onChangePosLayout={(nextLayout) => {
                 setDraftSharedDisplay(prev => ({ ...prev, posLayout: nextLayout }));
                 applyUiPrefs(posUiPrefs, true, document.documentElement, {

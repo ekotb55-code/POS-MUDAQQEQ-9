@@ -27,6 +27,7 @@ import {
   ImagesStorageStatus,
   ImagesMigrationResult,
   Item,
+  ProductCategory,
   InvoiceNumberingSettings
 } from '../types';
 import {
@@ -85,6 +86,7 @@ import { UserModal } from '../components/UserModal';
 import { ReceiptPrintArea } from '../components/ReceiptPrintArea';
 import { SystemResetSection } from '../components/settings/SystemResetSection';
 import { BankLinkSection } from '../components/settings/BankLinkSection';
+import { PosVisibleCategoriesPicker } from '../components/pos/PosVisibleCategoriesPicker';
 import {
   selectBackupDirectory,
   getBackupDirectoryStatus,
@@ -565,6 +567,7 @@ const DEMO_INVOICE: Invoice = {
 interface SettingsPageProps {
   config: SystemConfig;
   items?: Item[];
+  categories?: ProductCategory[];
   users: UserAccount[];
   currentUser: UserAccount;
   onSaveUser: (userData: any) => Promise<any>;
@@ -668,6 +671,7 @@ const MAX_VISITOR_SLIDES = 20;
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   config,
   items = [],
+  categories = [],
   users,
   currentUser,
   onSaveUser,
@@ -792,6 +796,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     };
   };
 
+  const normalizeCatIdList = (ids?: string[]): string[] =>
+    Array.isArray(ids)
+      ? Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)))
+      : [];
+
+  const areCategoryIdListsEqual = (a?: string[], b?: string[]): boolean => {
+    const normA = normalizeCatIdList(a);
+    const normB = normalizeCatIdList(b);
+    if (normA.length !== normB.length) return false;
+    const setB = new Set(normB);
+    return normA.every((id) => setB.has(id));
+  };
+
   const buildInitialDisplay = (cfg: SystemConfig): DisplaySettings => ({
     showItemImages: true,
     showStockQuantity: true,
@@ -803,7 +820,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     confirmInvoiceBeforeSave: true,
     enableInlineEdit: false,
     ...(cfg.displaySettings || {}),
-    autoFillCashPaid: cfg.displaySettings?.autoFillCashPaid ?? cfg.invoicePrintSettings?.autoFillCashPaid ?? true
+    autoFillCashPaid: cfg.displaySettings?.autoFillCashPaid ?? cfg.invoicePrintSettings?.autoFillCashPaid ?? true,
+    posVisibleCategoryIds: normalizeCatIdList(cfg.displaySettings?.posVisibleCategoryIds)
   });
 
   const buildInitialTax = (cfg: SystemConfig): TaxSettings => ({
@@ -1223,7 +1241,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
     const salesDisplayDirty =
       Boolean(displaySettings.confirmInvoiceBeforeSave) !== Boolean(committedDisplay.confirmInvoiceBeforeSave) ||
-      (displaySettings.autoFillCashPaid ?? true) !== (committedDisplay.autoFillCashPaid ?? true);
+      (displaySettings.autoFillCashPaid ?? true) !== (committedDisplay.autoFillCashPaid ?? true) ||
+      !areCategoryIdListsEqual(displaySettings.posVisibleCategoryIds, committedDisplay.posVisibleCategoryIds);
 
     const deliveryFeeDirty =
       Boolean(companySettings.enableDeliveryFee) !== Boolean(committedCompany.enableDeliveryFee);
@@ -1612,20 +1631,23 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
         if (pageDiffs.salesDisplayDirty) {
           const autoFillVal = displaySettings.autoFillCashPaid ?? true;
+          const nextPosVisibleCategoryIds = normalizeCatIdList(displaySettings.posVisibleCategoryIds);
           if (canManageDisplay || !canManagePrint) {
             const dispPayload: DisplaySettings = {
               ...runningDisplay,
               confirmInvoiceBeforeSave: displaySettings.confirmInvoiceBeforeSave,
-              autoFillCashPaid: autoFillVal
+              autoFillCashPaid: autoFillVal,
+              ...(canManageDisplay ? { posVisibleCategoryIds: nextPosVisibleCategoryIds } : {})
             };
             const dispRes = await api.saveDisplaySettings(dispPayload);
             if (dispRes && dispRes.success === false) {
-              throw new Error((dispRes as any).error || 'فشل حفظ خيارات الفاتورة');
+              throw new Error((dispRes as any).error || 'فشل حفظ إعدادات عرض شاشة البيع');
             }
             runningDisplay = dispPayload;
             setCommittedDisplay(dispPayload);
           }
-          if (canManagePrint) {
+          const autoFillChanged = autoFillVal !== (committedInvoice.autoFillCashPaid ?? true);
+          if (canManagePrint && autoFillChanged) {
             const invPayload: InvoicePrintSettings = {
               ...runningInvoice,
               autoFillCashPaid: autoFillVal
@@ -3745,6 +3767,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </div>
                   )}
               </div>
+            </div>
+          )}
+
+          {canManageDisplay && (
+            <div className="space-y-4">
+              <SectionHeading
+                title="تصنيفات شاشة نقطة البيع"
+                withTopDivider={canManageSalesRules || canManageDisplay || canManagePrint || canManageCompany}
+              />
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                حدد التصنيفات التي تظهر كأزرار في شاشة نقطة البيع فقط. لا يظهر زر «كل الأصناف»، وعند عدم تحديد أي تصنيف ستظهر حالة فارغة في نقطة البيع دون الرجوع لعرض الكل. (لا يؤثر ذلك على البحث أو مسح الباركود.)
+              </p>
+              <PosVisibleCategoriesPicker
+                categories={categories}
+                selectedCategoryIds={displaySettings.posVisibleCategoryIds || []}
+                onChange={(nextIds) =>
+                  setDisplaySettings({
+                    ...displaySettings,
+                    posVisibleCategoryIds: nextIds
+                  })
+                }
+              />
             </div>
           )}
         </div>

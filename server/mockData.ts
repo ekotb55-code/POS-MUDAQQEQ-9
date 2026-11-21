@@ -228,7 +228,8 @@ export const defaultDisplaySettings: DisplaySettings = {
   enableQuickBarcodeScan: true,
   confirmInvoiceBeforeSave: true,
   autoFillCashPaid: true,
-  enableInlineEdit: false
+  enableInlineEdit: false,
+  posVisibleCategoryIds: []
 };
 
 export const MAIN_WAREHOUSE_ID = 'wh-main-001';

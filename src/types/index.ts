@@ -353,6 +353,8 @@ export interface DisplaySettings {
   autoFillCashPaid?: boolean;
   enableInlineEdit?: boolean;
   keyboardShortcuts?: KeyboardShortcutsSettings;
+  /** معرّفات التصنيفات المختارة للعرض في شاشة نقطة البيع فقط */
+  posVisibleCategoryIds?: string[];
 }
 
 // 4. سجل التدقيق

@@ -4926,7 +4926,6 @@ function evaluateAddCategoriesRows(
   inputRows: BulkEditParsedInputRow[],
   existingCategories: ProductCategory[]
 ) {
-  const MULTI_LEVEL_DELIMITER_RE = /[/\\>»→←]/;
   const MAX_CATEGORY_NAME_LEN = 120;
   const isCategoryInactive = (c: ProductCategory): boolean => {
     const st = String(c.status || 'نشط').trim().toLowerCase();
@@ -4968,7 +4967,7 @@ function evaluateAddCategoriesRows(
     const values = rawRow.values || {};
     const mName = cleanCategoryImportCell(values.mainCategory ?? rawRow.name);
     const sName = cleanCategoryImportCell(values.subCategory);
-    if (mName && !MULTI_LEVEL_DELIMITER_RE.test(mName)) {
+    if (mName) {
       const nm = normalizeItemName(mName);
       if (nm) {
         const arr = fileMainRowsByNorm.get(nm) || [];
@@ -4976,7 +4975,7 @@ function evaluateAddCategoriesRows(
         fileMainRowsByNorm.set(nm, arr);
       }
     }
-    if (sName && !MULTI_LEVEL_DELIMITER_RE.test(sName)) {
+    if (sName) {
       const ns = normalizeItemName(sName);
       if (ns) {
         const arr = fileSubRowsByNorm.get(ns) || [];
@@ -5121,19 +5120,9 @@ function evaluateAddCategoriesRows(
       continue;
     }
 
-    // 4. منع أكثر من مستويين عبر فواصل المسار (/ أو \ أو >)
-    if (MULTI_LEVEL_DELIMITER_RE.test(mainName) || (subName && MULTI_LEVEL_DELIMITER_RE.test(subName))) {
-      pushRow({
-        status: 'error',
-        currentValueDisplay: 'غير صالح',
-        newValueDisplay: '—',
-        reason: 'القالب يدعم مستويين فقط (التصنيف الرئيسي والتصنيف الفرعي) — لا يُسمح بكتابة مسارات متعددة المستويات أو الرموز (/ أو >)',
-        categoryAction: 'error'
-      });
-      continue;
-    }
-
-    // 5. منع تطابق اسم الفرعي مع اسم الرئيسي في نفس الصف
+    // 4. منع تطابق اسم الفرعي مع اسم الرئيسي في نفس الصف
+    // ملاحظة: محتوى كل خلية يُعامل كاسم حرفي بالكامل (بما فيه الرموز مثل / و > و - والأقواس و & و +)،
+    // ويُحدد المستوى حصرياً عبر العمودين «التصنيف الرئيسي» و«التصنيف الفرعي».
     if (subName && normSub === normMain) {
       pushRow({
         status: 'error',
@@ -5250,7 +5239,7 @@ function evaluateAddCategoriesRows(
         continue;
       }
 
-      const pairKey = `${normMain}||${normSub}`;
+      const pairKey = JSON.stringify([normMain, normSub]);
       const prevPairRow = plannedSubsByPair.get(pairKey);
       if (prevPairRow !== undefined) {
         intraFileDuplicatesCount += 1;
@@ -5318,7 +5307,7 @@ function evaluateAddCategoriesRows(
     }
 
     // رئيسي جديد + فرعي جديد
-    const pairKey = `${normMain}||${normSub}`;
+    const pairKey = JSON.stringify([normMain, normSub]);
     const prevPairRow = plannedSubsByPair.get(pairKey);
     if (prevPairRow !== undefined) {
       intraFileDuplicatesCount += 1;
@@ -6908,7 +6897,7 @@ export async function generateBulkPriceEditTemplateBuffer(
       ['3. يمكن تكرار اسم التصنيف الرئيسي في عدة صفوف (مثل «إلكترونيات») لإضافة أكثر من تصنيف فرعي تحته، وسيتم إنشاء الرئيسي مرة واحدة فقط وربط جميع الفروع به.'],
       ['4. إذا كان التصنيف الرئيسي موجوداً بالفعل في النظام، يتم إعادة استخدامه تلقائياً دون إنشاء نسخة مكررة.'],
       ['5. إذا كان التصنيف الفرعي موجوداً مسبقاً تحت نفس الرئيسي، يتم تجاوزه كمكرر ولا تُعدَّل بياناته بصمت.'],
-      ['6. هذا القالب يدعم مستويين فقط (رئيسي وفرعي) — لا يُسمح بأعمدة مستويات إضافية أو كتابة مسارات بعلامات (/ أو >).'],
+      ['6. هذا القالب يدعم مستويين فقط عبر العمودين («التصنيف الرئيسي» و«التصنيف الفرعي») ولا يُسمح بأعمدة مستويات إضافية؛ وتُعامل الرموز داخل اسم التصنيف مثل (/ أو > أو - أو الأقواس أو & أو +) كجزء حرفي من الاسم.'],
       ['7. لا تقوم هذه العملية بحذف أو إعادة تسمية أي تصنيفات حالية ولا تغيّر ربط الأصناف الحالية.'],
       [`8. الحد الأقصى المسموح به هو ${BULK_EDIT_EXCEL_MAX_ROWS} صف في الملف الواحد.`]
     ];
@@ -14378,6 +14367,19 @@ export async function saveInvoicePrintSettings(settings: Partial<InvoicePrintSet
   return { success: true, settings: memoryInvoicePrintSettings };
 }
 
+function normalizePosVisibleCategoryIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw) {
+    const id = String(entry ?? '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /**
  * قراءة إعدادات عرض الأصناف وشاشة المبيعات
  */
@@ -14386,7 +14388,8 @@ export function getDisplaySettings(): DisplaySettings {
   return {
     ...defaultDisplaySettings,
     ...memoryDisplaySettings,
-    autoFillCashPaid: autoFill
+    autoFillCashPaid: autoFill,
+    posVisibleCategoryIds: normalizePosVisibleCategoryIds(memoryDisplaySettings.posVisibleCategoryIds)
   };
 }
 
@@ -14399,12 +14402,17 @@ export async function saveDisplaySettings(settings: Partial<DisplaySettings>, se
     settings.autoFillCashPaid !== undefined
       ? Boolean(settings.autoFillCashPaid)
       : (memoryDisplaySettings.autoFillCashPaid ?? memoryInvoicePrintSettings.autoFillCashPaid ?? true);
+  const nextPosVisibleCategoryIds =
+    settings.posVisibleCategoryIds !== undefined
+      ? normalizePosVisibleCategoryIds(settings.posVisibleCategoryIds)
+      : normalizePosVisibleCategoryIds(memoryDisplaySettings.posVisibleCategoryIds);
 
   const nextDisplaySettings: DisplaySettings = {
     ...defaultDisplaySettings,
     ...memoryDisplaySettings,
     ...settings,
-    autoFillCashPaid: nextAutoFill
+    autoFillCashPaid: nextAutoFill,
+    posVisibleCategoryIds: nextPosVisibleCategoryIds
   };
   const nextPrintSettings: InvoicePrintSettings = {
     ...defaultInvoicePrintSettings,

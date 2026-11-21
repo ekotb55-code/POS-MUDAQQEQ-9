@@ -2090,7 +2090,7 @@ export default function App() {
               onInvoiceCreated={handleInvoiceCreated}
               invoices={invoices}
               onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
-              onNavigateMain={(page) => handleNavigate(page)}
+              onNavigateMain={(page, tab) => handleNavigate(page, tab)}
               onPrintInvoice={(inv, reprint = true, autoPrint?: boolean) => {
                 const forceModal = autoPrint === false;
                 handlePrintInvoice(inv, reprint, forceModal);
@@ -2465,6 +2465,7 @@ export default function App() {
             <SettingsPage
               config={config}
               items={items}
+              categories={categories}
               users={users}
               currentUser={user}
               onSaveUser={handleSaveUser}

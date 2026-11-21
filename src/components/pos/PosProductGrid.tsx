@@ -8,7 +8,8 @@ import {
   List,
   FolderTree,
   Plus,
-  Barcode
+  Barcode,
+  Settings
 } from 'lucide-react';
 import {
   readUiPrefs,
@@ -20,11 +21,13 @@ import {
 export interface PosProductGridProps {
   items: Item[];
   posCategories?: ProductCategory[];
+  selectedCategoryIds?: string[];
   allowNegativeStockSale?: boolean;
   onAddToCart: (item: Item) => void;
   posLayout?: 'grid' | 'compact' | 'list';
   canCustomizeDisplay?: boolean;
   onChangePosLayout?: (nextLayout: 'grid' | 'list') => void;
+  onOpenCategorySettings?: () => void;
   previewUiPrefs?: UiPrefs;
 }
 
@@ -39,14 +42,16 @@ function getParentId(cat?: ProductCategory | null): string | undefined {
 export const PosProductGrid: React.FC<PosProductGridProps> = ({
   items,
   posCategories = [],
+  selectedCategoryIds = [],
   allowNegativeStockSale = false,
   onAddToCart,
   posLayout = 'grid',
   canCustomizeDisplay = false,
   onChangePosLayout,
+  onOpenCategorySettings,
   previewUiPrefs
 }) => {
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('ALL');
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [savedUiPrefs, setSavedUiPrefs] = useState<UiPrefs>(() => readUiPrefs());
 
   useEffect(() => {
@@ -81,38 +86,41 @@ export const PosProductGrid: React.FC<PosProductGridProps> = ({
     return map;
   }, [posCategories]);
 
-  // 2. التصنيفات الجذرية الرئيسية فقط (التي ليس لها parentId، مرتبة حسب displayOrder)
-  const rootCategories = useMemo(() => {
+  // 2. مجموعة معرفات التصنيفات المحددة للعرض في نقطة البيع من الإعدادات
+  const configuredCategoryIdSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const rawId of selectedCategoryIds || []) {
+      const id = String(rawId || '').trim();
+      if (id && categoryMap.has(id)) {
+        set.add(id);
+      }
+    }
+    return set;
+  }, [selectedCategoryIds, categoryMap]);
+
+  // 3. التصنيفات الظاهرة في الصف العلوي فقط (المحددة في الإعدادات دون تكرار فرعٍ اختير أبوه)
+  const visibleTopCategories = useMemo(() => {
+    const hasConfiguredAncestor = (cat: ProductCategory): boolean => {
+      let pId = getParentId(cat);
+      const visited = new Set<string>();
+      while (pId && !visited.has(pId)) {
+        visited.add(pId);
+        if (configuredCategoryIdSet.has(pId)) return true;
+        const parent = categoryMap.get(pId);
+        pId = getParentId(parent);
+      }
+      return false;
+    };
+
     return posCategories
-      .filter(c => !getParentId(c))
+      .filter(c => configuredCategoryIdSet.has(c.id) && !hasConfiguredAncestor(c))
       .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
-  }, [posCategories]);
+  }, [posCategories, configuredCategoryIdSet, categoryMap]);
 
-  // 3. حساب المسار الشجري (categoryPath) من التصنيف الرئيسي حتى التصنيف المختار عن طريق الصعود بـ parentId
-  // منع التكرار اللانهائي بحد أقصى 10 مستويات
-  const categoryPath = useMemo(() => {
-    if (!selectedCategoryId || selectedCategoryId === 'ALL' || selectedCategoryId === 'UNCATEGORIZED') {
-      return [];
-    }
-
-    const path: ProductCategory[] = [];
-    let currentId: string | undefined = selectedCategoryId;
-    const visited = new Set<string>();
-    let depth = 0;
-
-    while (currentId && depth < 10) {
-      if (visited.has(currentId)) break;
-      visited.add(currentId);
-      depth++;
-
-      const cat = categoryMap.get(currentId);
-      if (!cat) break;
-      path.unshift(cat); // نضع التصنيف في البداية حتى يكون الجذر أولاً path[0] ثم الأبناء
-      currentId = getParentId(cat);
-    }
-
-    return path;
-  }, [categoryMap, selectedCategoryId]);
+  const visibleTopCategoryIdSet = useMemo(
+    () => new Set(visibleTopCategories.map(c => c.id)),
+    [visibleTopCategories]
+  );
 
   // 4. استخراج جميع معرفات الفروع والأحفاد لشجرة تصنيف محدد بأي عمق
   const getBranchCategoryIds = useMemo(() => {
@@ -132,26 +140,80 @@ export const PosProductGrid: React.FC<PosProductGridProps> = ({
     };
   }, [posCategories]);
 
-  // 5. الأصناف المتاحة والنشطة للـ POS
+  // جميع معرفات التصنيفات المسموح بالتنقل داخلها (التصنيفات المحددة وفروعها)
+  const allowedVisibleCategoryIds = useMemo(() => {
+    const allowed = new Set<string>();
+    for (const top of visibleTopCategories) {
+      const branchIds = getBranchCategoryIds(top.id);
+      branchIds.forEach(id => allowed.add(id));
+    }
+    return allowed;
+  }, [visibleTopCategories, getBranchCategoryIds]);
+
+  // مزامنة التصنيف النشط مع القائمة المختارة من الإعدادات دون الرجوع أبداً إلى عرض الكل
+  useEffect(() => {
+    if (visibleTopCategories.length === 0) {
+      if (selectedCategoryId !== null) {
+        setSelectedCategoryId(null);
+      }
+      return;
+    }
+    if (!selectedCategoryId || !allowedVisibleCategoryIds.has(selectedCategoryId)) {
+      setSelectedCategoryId(visibleTopCategories[0].id);
+    }
+  }, [visibleTopCategories, allowedVisibleCategoryIds, selectedCategoryId]);
+
+  const effectiveSelectedCategoryId =
+    selectedCategoryId && allowedVisibleCategoryIds.has(selectedCategoryId)
+      ? selectedCategoryId
+      : visibleTopCategories[0]?.id ?? null;
+
+  // 5. حساب المسار الشجري (categoryPath) من التصنيف العلوي المحدد حتى التصنيف النشط
+  const categoryPath = useMemo(() => {
+    if (!effectiveSelectedCategoryId) {
+      return [];
+    }
+
+    const path: ProductCategory[] = [];
+    let currentId: string | undefined = effectiveSelectedCategoryId;
+    const visited = new Set<string>();
+    let depth = 0;
+
+    while (currentId && depth < 10) {
+      if (visited.has(currentId)) break;
+      visited.add(currentId);
+      depth++;
+
+      const cat = categoryMap.get(currentId);
+      if (!cat) break;
+      path.unshift(cat);
+      if (visibleTopCategoryIdSet.has(cat.id)) {
+        break;
+      }
+      currentId = getParentId(cat);
+    }
+
+    return path;
+  }, [categoryMap, effectiveSelectedCategoryId, visibleTopCategoryIdSet]);
+
+  // 6. الأصناف المتاحة والنشطة للـ POS
   const activeItems = useMemo(() => {
     return items.filter(
       it => it.status !== 'inactive' && it.status !== 'موقوف' && it.status !== 'مؤرشف'
     );
   }, [items]);
 
-  // 6. إحصائيات عدد الأصناف لكل تصنيف = أصنافه + أصناف كل فروعه بأي عمق
+  // 7. إحصائيات عدد الأصناف لكل تصنيف = أصنافه + أصناف كل فروعه بأي عمق
   const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = { ALL: activeItems.length, UNCATEGORIZED: 0 };
+    const counts: Record<string, number> = {};
     posCategories.forEach(c => {
       const branchIds = getBranchCategoryIds(c.id);
       counts[c.id] = activeItems.filter(it => it.categoryId && branchIds.has(it.categoryId)).length;
     });
-    counts.UNCATEGORIZED = activeItems.filter(it => !it.categoryId).length;
     return counts;
   }, [activeItems, posCategories, getBranchCategoryIds]);
 
-  // 7. صفوف الفروع المتتالية لأي عمق بناءً على categoryPath:
-  // يظهر صف لكل مستوى ضمن categoryPath إذا كان له فروع مباشرة
+  // 8. صفوف الفروع المتتالية لأي عمق بناءً على categoryPath
   const subCategoryRows = useMemo(() => {
     const rows: {
       parentCat: ProductCategory;
@@ -180,17 +242,14 @@ export const PosProductGrid: React.FC<PosProductGridProps> = ({
     return rows;
   }, [categoryPath, posCategories]);
 
-  // 8. تصفية الأصناف: تعرض أصناف التصنيف المختار وفروعه فقط (أو كل الأصناف لو ALL)
+  // 9. تصفية الأصناف: تعرض أصناف التصنيف المختار وفروعه فقط، ولا تعرض كل الأصناف عند عدم وجود اختيار
   const filteredItems = useMemo(() => {
-    if (selectedCategoryId === 'UNCATEGORIZED') {
-      return activeItems.filter(it => !it.categoryId);
+    if (!effectiveSelectedCategoryId) {
+      return [];
     }
-    if (selectedCategoryId !== 'ALL') {
-      const branchIds = getBranchCategoryIds(selectedCategoryId);
-      return activeItems.filter(it => it.categoryId && branchIds.has(it.categoryId));
-    }
-    return activeItems;
-  }, [activeItems, selectedCategoryId, getBranchCategoryIds]);
+    const branchIds = getBranchCategoryIds(effectiveSelectedCategoryId);
+    return activeItems.filter(it => it.categoryId && branchIds.has(it.categoryId));
+  }, [activeItems, effectiveSelectedCategoryId, getBranchCategoryIds]);
 
   const catIconSizeClass =
     uiPrefs.posCategorySize === 'small'
@@ -230,85 +289,41 @@ export const PosProductGrid: React.FC<PosProductGridProps> = ({
   return (
     <div className="pos-surface pos-products-surface flex-1 flex flex-col h-full bg-white rounded-2xl border border-slate-200 shadow-xs">
       
-      {/* 1. الصف الأول: التصنيفات الرئيسية ومعاهم «كل الأصناف» (عرض الزر على قد النص وارتفاع من --pos-cat-h) */}
-      <div className="pos-categories-bar p-2 border-b border-slate-200 bg-slate-50/60 shrink-0">
-        <div className="flex overflow-x-auto md:overflow-visible flex-nowrap md:flex-wrap items-center gap-2 pb-1 md:pb-0 custom-scrollbar">
-          {/* زر كل الأصناف */}
-          <button
-            type="button"
-            onClick={() => setSelectedCategoryId('ALL')}
-            style={{ fontSize: 'var(--pos-cat-font)' }}
-            className={`min-h-[var(--pos-cat-h)] h-[var(--pos-cat-h)] shrink-0 px-3 py-1 rounded-xl font-bold transition cursor-pointer inline-flex items-center justify-center gap-1.5 whitespace-nowrap text-center leading-tight shadow-2xs ${
-              selectedCategoryId === 'ALL'
-                ? 'bg-cyan-600 text-white shadow-xs'
-                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-            }`}
-          >
-            <Layers className={`${catIconSizeClass} shrink-0`} />
-            <span>كل الأصناف</span>
-            <span
-              className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono shrink-0 ${
-                selectedCategoryId === 'ALL' ? 'bg-cyan-700 text-white' : 'bg-slate-100 text-slate-600 border border-slate-200'
-              }`}
-            >
-              {categoryCounts.ALL || 0}
-            </span>
-          </button>
-
-          {/* باقي التصنيفات الجذرية */}
-          {rootCategories.map(cat => {
-            const isSelected = categoryPath[0]?.id === cat.id;
-            const count = categoryCounts[cat.id] || 0;
-            return (
-              <button
-                key={cat.id}
-                type="button"
-                onClick={() => setSelectedCategoryId(cat.id)}
-                style={{ fontSize: 'var(--pos-cat-font)' }}
-                className={`min-h-[var(--pos-cat-h)] h-[var(--pos-cat-h)] shrink-0 px-3 py-1 rounded-xl font-bold transition cursor-pointer inline-flex items-center justify-center gap-1.5 whitespace-nowrap text-center leading-tight shadow-2xs ${
-                  isSelected
-                    ? 'bg-cyan-600 text-white shadow-xs'
-                    : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-                }`}
-              >
-                <span>{cat.name}</span>
-                {count > 0 && (
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono shrink-0 ${
-                      isSelected ? 'bg-cyan-700 text-white' : 'bg-slate-100 text-slate-600 border border-slate-200'
-                    }`}
-                  >
-                    {count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-
-          {/* زر أصناف غير مصنفة */}
-          {categoryCounts.UNCATEGORIZED > 0 && (
-            <button
-              type="button"
-              onClick={() => setSelectedCategoryId('UNCATEGORIZED')}
-              style={{ fontSize: 'var(--pos-cat-font)' }}
-              className={`min-h-[var(--pos-cat-h)] h-[var(--pos-cat-h)] shrink-0 px-3 py-1 rounded-xl font-bold transition cursor-pointer inline-flex items-center justify-center gap-1.5 whitespace-nowrap text-center leading-tight shadow-2xs ${
-                selectedCategoryId === 'UNCATEGORIZED'
-                  ? 'bg-cyan-600 text-white shadow-xs'
-                  : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-              }`}
-            >
-              <span>غير مصنفة</span>
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono shrink-0 ${
-                  selectedCategoryId === 'UNCATEGORIZED' ? 'bg-cyan-700 text-white' : 'bg-slate-100 text-slate-600 border border-slate-200'
-                }`}
-              >
-                {categoryCounts.UNCATEGORIZED}
-              </span>
-            </button>
-          )}
+      {/* 1. الصف الأول: التصنيفات المختارة للعرض في نقطة البيع فقط (بدون زر «كل الأصناف») */}
+      {visibleTopCategories.length > 0 && (
+        <div className="pos-categories-bar p-2 border-b border-slate-200 bg-slate-50/60 shrink-0">
+          <div className="flex overflow-x-auto md:overflow-visible flex-nowrap md:flex-wrap items-center gap-2 pb-1 md:pb-0 custom-scrollbar">
+            {visibleTopCategories.map(cat => {
+              const isSelected = categoryPath[0]?.id === cat.id;
+              const count = categoryCounts[cat.id] || 0;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setSelectedCategoryId(cat.id)}
+                  style={{ fontSize: 'var(--pos-cat-font)' }}
+                  className={`min-h-[var(--pos-cat-h)] h-[var(--pos-cat-h)] shrink-0 px-3 py-1 rounded-xl font-bold transition cursor-pointer inline-flex items-center justify-center gap-1.5 whitespace-nowrap text-center leading-tight shadow-2xs ${
+                    isSelected
+                      ? 'bg-cyan-600 text-white shadow-xs'
+                      : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  <span>{cat.name}</span>
+                  {count > 0 && (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono shrink-0 ${
+                        isSelected ? 'bg-cyan-700 text-white' : 'bg-slate-100 text-slate-600 border border-slate-200'
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 2. صفوف الفروع المتتالية لأي عمق (تظهر طالما التصنيف في المسار له فروع) */}
       {subCategoryRows.map(row => (
@@ -381,46 +396,34 @@ export const PosProductGrid: React.FC<PosProductGridProps> = ({
         </div>
       ))}
 
-      {/* 3. مسار نصي صغير (Breadcrumb) + زرارين تبديل العرض (كروت/قائمة) على الطرف الشمال */}
+      {/* 3. عنوان التصنيف المختار (Breadcrumb) + زرارين تبديل العرض (كروت/قائمة) */}
       <div className="pos-categories-bar px-3 py-1.5 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between gap-2 text-xs text-slate-600 shrink-0">
-        {/* مسار الـ Breadcrumb: «كل الأصناف › ...» */}
         <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar py-0.5">
-          <button
-            type="button"
-            onClick={() => setSelectedCategoryId('ALL')}
-            className={`transition hover:text-cyan-600 hover:underline cursor-pointer shrink-0 ${
-              selectedCategoryId === 'ALL' ? 'font-bold text-slate-900' : 'text-slate-600'
-            }`}
-          >
-            كل الأصناف
-          </button>
-
-          {selectedCategoryId === 'UNCATEGORIZED' && (
-            <>
-              <span className="text-slate-400 shrink-0">›</span>
-              <span className="font-bold text-slate-900 shrink-0">غير مصنفة</span>
-            </>
+          {visibleTopCategories.length === 0 ? (
+            <span className="font-bold text-slate-600 shrink-0">لم يتم تحديد تصنيفات للعرض</span>
+          ) : categoryPath.length === 0 ? (
+            <span className="font-bold text-slate-600 shrink-0">اختر تصنيفًا لعرض الأصناف</span>
+          ) : (
+            categoryPath.map((cat, idx) => {
+              const isLast = cat.id === effectiveSelectedCategoryId;
+              return (
+                <React.Fragment key={cat.id}>
+                  {idx > 0 && <span className="text-slate-400 shrink-0">›</span>}
+                  {isLast ? (
+                    <span className="font-bold text-slate-900 shrink-0">{cat.name}</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCategoryId(cat.id)}
+                      className="hover:text-cyan-600 hover:underline cursor-pointer transition text-slate-600 shrink-0"
+                    >
+                      {cat.name}
+                    </button>
+                  )}
+                </React.Fragment>
+              );
+            })
           )}
-
-          {categoryPath.map((cat) => {
-            const isLast = cat.id === selectedCategoryId;
-            return (
-              <React.Fragment key={cat.id}>
-                <span className="text-slate-400 shrink-0">›</span>
-                {isLast ? (
-                  <span className="font-bold text-slate-900 shrink-0">{cat.name}</span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedCategoryId(cat.id)}
-                    className="hover:text-cyan-600 hover:underline cursor-pointer transition text-slate-600 shrink-0"
-                  >
-                    {cat.name}
-                  </button>
-                )}
-              </React.Fragment>
-            );
-          })}
         </div>
 
         {/* أزرار نمط العرض: كروت أو قائمة على الطرف الشمال (تظهر فقط لمن معه صلاحية settings.display_customization وتحفظ للنسخة كلها) */}
@@ -458,22 +461,33 @@ export const PosProductGrid: React.FC<PosProductGridProps> = ({
 
       {/* 4. مساحة عرض كروت الأصناف بدون scroll داخلي */}
       <div className="flex-1 p-2.5 sm:p-3">
-        {filteredItems.length === 0 ? (
+        {visibleTopCategories.length === 0 ? (
+          <div className="min-h-[240px] flex flex-col items-center justify-center text-center p-6 text-slate-400">
+            <Layers className="w-12 h-12 text-slate-300 mb-2.5 stroke-[1.5]" />
+            <h4 className="text-sm font-bold text-slate-700 mb-1">
+              لم يتم تحديد تصنيفات لنقطة البيع
+            </h4>
+            <p className="text-xs text-slate-500 max-w-sm mb-3.5 leading-relaxed">
+              لا توجد تصنيفات مختارة للعرض في شاشة البيع حالياً. يرجى تحديد التصنيفات المطلوب إظهارها من إعدادات عرض شاشة البيع.
+            </p>
+            {canCustomizeDisplay && onOpenCategorySettings && (
+              <button
+                type="button"
+                onClick={onOpenCategorySettings}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 text-xs font-bold cursor-pointer transition"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>تحديد التصنيفات من الإعدادات</span>
+              </button>
+            )}
+          </div>
+        ) : filteredItems.length === 0 ? (
           <div className="min-h-[220px] flex flex-col items-center justify-center text-center p-6 text-slate-400">
             <Package className="w-12 h-12 text-slate-300 mb-2 stroke-[1.5]" />
             <h4 className="text-sm font-bold text-slate-700 mb-1">لا توجد أصناف</h4>
-            <p className="text-xs text-slate-500 max-w-xs mb-3">
+            <p className="text-xs text-slate-500 max-w-xs">
               لا توجد أصناف في هذا التصنيف حالياً.
             </p>
-            {selectedCategoryId !== 'ALL' && (
-              <button
-                type="button"
-                onClick={() => setSelectedCategoryId('ALL')}
-                className="px-3 py-1.5 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 text-xs font-bold cursor-pointer transition"
-              >
-                عرض كل الأصناف
-              </button>
-            )}
           </div>
         ) : viewMode === 'cards' ? (
           /* عرض شبكي للبطاقات: يستعمل --pos-card-w كعرض الكارت و --pos-card-img-h لارتفاع الصورة */
