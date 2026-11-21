@@ -1343,8 +1343,11 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
                 value={barcodeInput}
                 onChange={(e) => onBarcodeInput(e.target.value)}
                 onKeyDown={(e) => {
+                  if ((e.nativeEvent as any).__posBarcodeHandled) return;
                   if (e.key === 'Enter') {
+                    (e.nativeEvent as any).__posBarcodeHandled = true;
                     e.preventDefault();
+                    e.stopPropagation();
                     const code = e.currentTarget.value.trim() || barcodeInput.trim();
                     if (code) {
                       onBarcodeInput('');
@@ -1409,11 +1412,19 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
               type="text"
               value={itemNameSearch}
               onChange={(e) => {
-                setItemSearchTerm(e.target.value);
-                setIsSuggestionsOpen(true);
+                const val = e.target.value;
+                setItemSearchTerm(val);
+                setIsSuggestionsOpen(val.trim().length > 0);
               }}
-              onFocus={() => setIsSuggestionsOpen(true)}
-              onKeyDown={handleItemSearchKeyDown}
+              onFocus={() => {
+                if (itemNameSearch.trim().length > 0) {
+                  setIsSuggestionsOpen(true);
+                }
+              }}
+              onKeyDown={(e) => {
+                if ((e.nativeEvent as any).__posBarcodeHandled) return;
+                handleItemSearchKeyDown(e);
+              }}
               placeholder="ابحث بالاسم، الكود / SKU، الباركود، أو المورد (Enter للإضافة)..."
               className="w-full min-h-[44px] pl-3 pr-9 py-2 text-xs rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
@@ -1548,11 +1559,12 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
                           value={c.quantity}
                           onChange={(e) => {
                             const val = parseInt(e.target.value, 10);
-                            if (!isNaN(val)) {
+                            if (!isNaN(val) && val >= 1) {
                               onUpdateQuantity(c.item.id, val);
                             }
                           }}
                           onKeyDown={(e) => {
+                            if ((e.nativeEvent as any).__posBarcodeHandled) return;
                             if (e.key === 'Enter') {
                               e.preventDefault();
                               document.getElementById('pos-barcode-input')?.focus();
@@ -1567,6 +1579,7 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
                           <input
                             type="number"
                             step="any"
+                            data-pos-price-input-id={c.item.id}
                             min={canOverrideMinPrice ? 0 : (c.item.minPrice || 0)}
                             value={c.baseUnitPrice !== undefined ? c.baseUnitPrice : c.salePriceAtSale}
                             onChange={(e) => {

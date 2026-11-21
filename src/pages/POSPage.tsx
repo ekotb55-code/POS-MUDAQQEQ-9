@@ -1866,7 +1866,32 @@ export const POSPage: React.FC<POSPageProps> = ({
     }
   }, [initialItemToAdd]);
 
-  const addToCart = (item: Item, explicitBarcode?: string) => {
+  const [selectedCartItemId, setSelectedCartItemId] = useState<string | null>(null);
+  const [focusCartQtyToken, setFocusCartQtyToken] = useState<number>(0);
+
+  const posActiveScreenRef = useRef<HTMLDivElement | null>(null);
+  const cartRef = useRef<CartItem[]>(cart);
+  useEffect(() => {
+    cartRef.current = cart;
+  }, [cart]);
+
+  const commitCart = React.useCallback(
+    (updater: CartItem[] | ((prev: CartItem[]) => CartItem[])) => {
+      setCart((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        cartRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const addToCart = (
+    item: Item,
+    explicitBarcode?: string,
+    options?: { fromBarcodeScan?: boolean }
+  ) => {
+    const fromBarcodeScan = Boolean(options?.fromBarcodeScan);
     setErrorMsg(null);
     if (effectivePlatform && item.platformIds && item.platformIds.length > 0 && !item.platformIds.includes(effectivePlatform.id)) {
       const msg = `هذا الصنف غير متاح على منصة ${effectivePlatform.name}`;
@@ -1884,48 +1909,82 @@ export const POSPage: React.FC<POSPageProps> = ({
     }
 
     const calc = calculateLineFinancials(item, effectivePlatform);
+    const currentCart = cartRef.current;
+    const existing = currentCart.find(c => c.item.id === item.id);
 
-    const existing = cart.find(c => c.item.id === item.id);
     if (existing) {
       if (!effectiveAllowNegativeStock && existing.quantity + 1 > item.stockQuantity) {
-        setCart(cart.map(c => c.item.id === item.id ? { ...c, quantity: Math.max(0, item.stockQuantity) } : c));
+        const clamped = Math.max(0, item.stockQuantity);
+        if (fromBarcodeScan) {
+          commitCart((prev) => {
+            const target = prev.find(c => c.item.id === item.id);
+            if (!target) return prev;
+            if (clamped <= 0) return prev.filter(c => c.item.id !== item.id);
+            const updatedLine: CartItem = {
+              ...target,
+              quantity: clamped,
+              barcodeAtSale: explicitBarcode || target.barcodeAtSale
+            };
+            return [updatedLine, ...prev.filter(c => c.item.id !== item.id)];
+          });
+        } else {
+          commitCart((prev) =>
+            prev.map(c => (c.item.id === item.id ? { ...c, quantity: clamped } : c))
+          );
+        }
         setErrorMsg(`الكمية لا تكفي. المتاح: ${item.stockQuantity}`);
         return;
       }
-      setCart(cart.map(c => c.item.id === item.id ? { ...c, quantity: c.quantity + 1 } : c));
+
+      if (fromBarcodeScan) {
+        commitCart((prev) => {
+          const target = prev.find(c => c.item.id === item.id);
+          if (!target) return prev;
+          const updatedLine: CartItem = {
+            ...target,
+            quantity: target.quantity + 1,
+            barcodeAtSale: explicitBarcode || target.barcodeAtSale
+          };
+          return [updatedLine, ...prev.filter(c => c.item.id !== item.id)];
+        });
+      } else {
+        commitCart((prev) =>
+          prev.map(c => (c.item.id === item.id ? { ...c, quantity: c.quantity + 1 } : c))
+        );
+      }
       showAddedItemToast(item.name);
     } else {
-      setCart([
-        ...cart,
-        {
-          item,
-          quantity: 1,
-          salePriceAtSale: calc.baseUnitPrice,
-          baseUnitPrice: calc.baseUnitPrice,
-          customerUnitPrice: calc.customerUnitPrice,
-          bnplPercent: calc.bnplPercent,
-          bnplUnitAmount: calc.bnplUnitAmount,
-          bnplDeductionUnit: calc.bnplDeductionUnit,
-          barcodeAtSale: explicitBarcode || calc.barcodeAtSale,
-          taxRateAtSale: calc.effectiveTaxRate,
-          unitTaxAmount: calc.unitTax,
-          unitBasePrice: calc.unitBase,
-          unitPickupFee: calc.pickupFee,
-          platformDiscountPercent: calc.discPercent,
-          unitDiscountValue: calc.unitDiscount,
-          unitNetAfterDiscount: calc.unitNetDisc,
-          unitNet: calc.unitNet,
-          unitProfit: calc.unitProfit
-        }
-      ]);
+      const newLine: CartItem = {
+        item,
+        quantity: 1,
+        salePriceAtSale: calc.baseUnitPrice,
+        baseUnitPrice: calc.baseUnitPrice,
+        customerUnitPrice: calc.customerUnitPrice,
+        bnplPercent: calc.bnplPercent,
+        bnplUnitAmount: calc.bnplUnitAmount,
+        bnplDeductionUnit: calc.bnplDeductionUnit,
+        barcodeAtSale: explicitBarcode || calc.barcodeAtSale,
+        taxRateAtSale: calc.effectiveTaxRate,
+        unitTaxAmount: calc.unitTax,
+        unitBasePrice: calc.unitBase,
+        unitPickupFee: calc.pickupFee,
+        platformDiscountPercent: calc.discPercent,
+        unitDiscountValue: calc.unitDiscount,
+        unitNetAfterDiscount: calc.unitNetDisc,
+        unitNet: calc.unitNet,
+        unitProfit: calc.unitProfit
+      };
+
+      if (fromBarcodeScan) {
+        commitCart((prev) => [newLine, ...prev.filter(c => c.item.id !== item.id)]);
+      } else {
+        commitCart((prev) => [...prev, newLine]);
+      }
       showAddedItemToast(item.name);
     }
   };
 
-  const [selectedCartItemId, setSelectedCartItemId] = useState<string | null>(null);
-  const [focusCartQtyToken, setFocusCartQtyToken] = useState<number>(0);
-
-  // البحث عن الصنف بالباركود وإضافته مباشرة حسب وضع إضافة الكمية بالباركود
+  // البحث عن الصنف بالباركود وإضافته أو تحديثه ووضعه في أول صف من السلة
   const handleBarcodeScanned = (scannedCode: string) => {
     const cleanCode = scannedCode.trim();
     if (!cleanCode) return;
@@ -1954,12 +2013,22 @@ export const POSPage: React.FC<POSPageProps> = ({
         return;
       }
 
-      const existingInCart = cart.find(c => c.item.id === foundItem.id);
+      const currentCart = cartRef.current;
+      const existingInCart = currentCart.find(c => c.item.id === foundItem.id);
       const scanMode = readUiPrefs().barcodeScanMode;
 
-      // في وضع «مسح الصنف ثم تعديل الكمية»: إذا كان الصنف موجودًا في السلة، نحدد سطره لتعديل الكمية يدويًا دون زيادة تلقائية
+      // في وضع «مسح الصنف ثم تعديل الكمية»: إذا كان الصنف موجودًا في السلة، ننقل سطره إلى أول صف ونحدده لتعديل الكمية يدويًا دون زيادة تلقائية أو إنشاء سطر مكرر
       if (existingInCart && scanMode === 'edit_quantity') {
         playBeep();
+        commitCart((prev) => {
+          const target = prev.find(c => c.item.id === foundItem.id);
+          if (!target) return prev;
+          const updatedTarget: CartItem = {
+            ...target,
+            barcodeAtSale: cleanCode || target.barcodeAtSale
+          };
+          return [updatedTarget, ...prev.filter(c => c.item.id !== foundItem.id)];
+        });
         setSelectedCartItemId(foundItem.id);
         if (!isCameraModalOpen) {
           setFocusCartQtyToken(prev => prev + 1);
@@ -1984,7 +2053,19 @@ export const POSPage: React.FC<POSPageProps> = ({
       }
 
       if (!effectiveAllowNegativeStock && existingInCart && existingInCart.quantity + 1 > foundItem.stockQuantity) {
-        updateQuantity(foundItem.id, foundItem.stockQuantity);
+        const clamped = Math.max(0, foundItem.stockQuantity);
+        commitCart((prev) => {
+          const target = prev.find(c => c.item.id === foundItem.id);
+          if (!target) return prev;
+          if (clamped <= 0) return prev.filter(c => c.item.id !== foundItem.id);
+          const updatedTarget: CartItem = {
+            ...target,
+            quantity: clamped,
+            barcodeAtSale: cleanCode || target.barcodeAtSale
+          };
+          return [updatedTarget, ...prev.filter(c => c.item.id !== foundItem.id)];
+        });
+        setSelectedCartItemId(clamped > 0 ? foundItem.id : null);
         setErrorMsg(`الكمية لا تكفي. المتاح: ${foundItem.stockQuantity}`);
         setScanFeedback({
           type: 'error',
@@ -1995,7 +2076,7 @@ export const POSPage: React.FC<POSPageProps> = ({
       }
 
       playBeep();
-      addToCart(foundItem, cleanCode);
+      addToCart(foundItem, cleanCode, { fromBarcodeScan: true });
       setSelectedCartItemId(foundItem.id);
       setScanFeedback({
         type: 'success',
@@ -2013,6 +2094,299 @@ export const POSPage: React.FC<POSPageProps> = ({
     }
   };
 
+  const handleBarcodeScannedRef = useRef(handleBarcodeScanned);
+  handleBarcodeScannedRef.current = handleBarcodeScanned;
+
+  // مراجع أحدث قيم الحقول لاسترجاعها بدقة إذا بدأ المسح السريع أثناء تركيز أي حقل إدخال في نقطة البيع
+  const latestPosFieldsRef = useRef({
+    errorMsg,
+    selectedCartItemId,
+    notes,
+    searchQuery,
+    paidAmountInput,
+    isManualCashOverride,
+    platformOrderId,
+    deliveryFee,
+    deliveryAddress,
+    deliveryPhone,
+    deliveryOrderFeeInput,
+    deliveryFeeManual,
+    deliveryTrackingNumber,
+    posBnplPercentInput,
+    isBnplPercentOverridden,
+    posCommissionPercentInput,
+    isCommissionPercentOverridden,
+    selectedWarehouseId,
+    selectedPlatformId,
+    selectedCustomerId,
+    selectedCashboxId,
+    deliveryZoneId,
+    deliveryAssigneeType,
+    deliveryAssigneeId
+  });
+  latestPosFieldsRef.current = {
+    errorMsg,
+    selectedCartItemId,
+    notes,
+    searchQuery,
+    paidAmountInput,
+    isManualCashOverride,
+    platformOrderId,
+    deliveryFee,
+    deliveryAddress,
+    deliveryPhone,
+    deliveryOrderFeeInput,
+    deliveryFeeManual,
+    deliveryTrackingNumber,
+    posBnplPercentInput,
+    isBnplPercentOverridden,
+    posCommissionPercentInput,
+    isCommissionPercentOverridden,
+    selectedWarehouseId,
+    selectedPlatformId,
+    selectedCustomerId,
+    selectedCashboxId,
+    deliveryZoneId,
+    deliveryAssigneeType,
+    deliveryAssigneeId
+  };
+
+  // التقاط مسح قارئ الباركود (USB / Bluetooth) من أي موضع داخل شاشة نقطة البيع النشطة دون تلويث حقول الإدخال
+  useEffect(() => {
+    const SCANNER_MAX_INTER_KEY_MS = 50;
+    const SCANNER_ENTER_MAX_DELAY_MS = 120;
+    const MIN_BARCODE_LENGTH = 3;
+
+    interface PreBurstSnapshot {
+      element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+      domValue: string;
+      cartSnapshot: CartItem[];
+      fieldsSnapshot: typeof latestPosFieldsRef.current;
+    }
+
+    let burstChars: string[] = [];
+    let firstKeyTime = 0;
+    let lastKeyTime = 0;
+    let isBurstLocked = false;
+    let preBurstSnapshot: PreBurstSnapshot | null = null;
+
+    const resetBurstState = () => {
+      burstChars = [];
+      firstKeyTime = 0;
+      lastKeyTime = 0;
+      isBurstLocked = false;
+      preBurstSnapshot = null;
+    };
+
+    const setReactElementValue = (
+      el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+      nextValue: string
+    ) => {
+      try {
+        const currentVal = el.value;
+        const tracker = (el as any)._valueTracker;
+        if (tracker) {
+          tracker.setValue(currentVal === nextValue ? `${nextValue}__rollback__` : currentVal);
+        }
+        const proto =
+          el instanceof HTMLTextAreaElement
+            ? window.HTMLTextAreaElement.prototype
+            : el instanceof HTMLSelectElement
+            ? window.HTMLSelectElement.prototype
+            : window.HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (nativeSetter) {
+          nativeSetter.call(el, nextValue);
+        } else {
+          el.value = nextValue;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        if (el instanceof HTMLSelectElement) {
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      } catch {
+        // ignore DOM rollback errors
+      }
+    };
+
+    const restorePreBurstSnapshot = () => {
+      if (!preBurstSnapshot) return;
+      const snap = preBurstSnapshot;
+
+      commitCart(snap.cartSnapshot);
+      const f = snap.fieldsSnapshot;
+      setErrorMsg(f.errorMsg);
+      setSelectedCartItemId(f.selectedCartItemId);
+      setNotes(f.notes);
+      setSearchQuery(f.searchQuery);
+      setPaidAmountInput(f.paidAmountInput);
+      setIsManualCashOverride(f.isManualCashOverride);
+      setPlatformOrderId(f.platformOrderId);
+      setDeliveryFee(f.deliveryFee);
+      setDeliveryAddress(f.deliveryAddress);
+      setDeliveryPhone(f.deliveryPhone);
+      setDeliveryOrderFeeInput(f.deliveryOrderFeeInput);
+      setDeliveryFeeManual(f.deliveryFeeManual);
+      setDeliveryTrackingNumber(f.deliveryTrackingNumber);
+      setPosBnplPercentInput(f.posBnplPercentInput);
+      setIsBnplPercentOverridden(f.isBnplPercentOverridden);
+      setPosCommissionPercentInput(f.posCommissionPercentInput);
+      setIsCommissionPercentOverridden(f.isCommissionPercentOverridden);
+
+      if (snap.element) {
+        setReactElementValue(snap.element, snap.domValue);
+      }
+    };
+
+    const isPosScreenActiveAndModalFree = (): boolean => {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return false;
+      if (document.visibilityState === 'hidden') return false;
+      if (
+        isCameraModalOpen ||
+        isFormulaModalOpen ||
+        Boolean(pendingWarehouseSwitch) ||
+        Boolean(pendingPlatformSwitch) ||
+        Boolean(pendingModeSwitch) ||
+        Boolean(pendingDraftPrompt) ||
+        isUiAppearanceOpen ||
+        isSubmittingRef.current
+      ) {
+        return false;
+      }
+      if (
+        document.querySelector(
+          '[role="dialog"], [aria-modal="true"], [data-shortcut-modal="true"]'
+        )
+      ) {
+        return false;
+      }
+      const container = posActiveScreenRef.current;
+      if (!container || container.offsetParent === null) {
+        return false;
+      }
+      return true;
+    };
+
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e as any).__posBarcodeHandled) return;
+
+      if (!isPosScreenActiveAndModalFree()) {
+        resetBurstState();
+        return;
+      }
+
+      const target = (e.target as HTMLElement | null) || (document.activeElement as HTMLElement | null);
+
+      // إذا كان التركيز داخل حقل الباركود نفسه، يترك الحقل ليعالج الإدخال و Enter مباشرة دون ازدواجية
+      if (
+        target &&
+        (target.id === 'pos-barcode-input' ||
+          target.getAttribute('data-pos-barcode-input') === 'true')
+      ) {
+        resetBurstState();
+        return;
+      }
+
+      if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing) {
+        resetBurstState();
+        return;
+      }
+
+      // قارئات الباركود قد ترسل Shift قبل الحروف الكبيرة أو الرموز؛ نتجاهلها دون تصفير التتابع
+      if (e.key === 'Shift' || e.key === 'CapsLock' || e.key === 'NumLock') {
+        return;
+      }
+
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+      if (e.key === 'Enter') {
+        const dtSinceLastChar = lastKeyTime > 0 ? now - lastKeyTime : Infinity;
+        const totalDuration = firstKeyTime > 0 ? lastKeyTime - firstKeyTime : Infinity;
+        const avgInterval =
+          burstChars.length > 1 ? totalDuration / (burstChars.length - 1) : Infinity;
+
+        if (
+          burstChars.length >= MIN_BARCODE_LENGTH &&
+          dtSinceLastChar <= SCANNER_ENTER_MAX_DELAY_MS &&
+          (isBurstLocked || avgInterval <= SCANNER_MAX_INTER_KEY_MS)
+        ) {
+          (e as any).__posBarcodeHandled = true;
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+
+          restorePreBurstSnapshot();
+          const scannedCode = burstChars.join('').trim();
+          resetBurstState();
+
+          if (scannedCode) {
+            handleBarcodeScannedRef.current(scannedCode);
+          }
+          return;
+        }
+
+        resetBurstState();
+        return;
+      }
+
+      // أي مفتاح غير طباعي (مثل F2، F3، F4، Esc، الأسهم، Backspace، Tab) يُترك يعمل طبيعيًا ويصفّر المخزن المؤقت
+      if (e.key.length !== 1) {
+        resetBurstState();
+        return;
+      }
+
+      const dt = lastKeyTime > 0 ? now - lastKeyTime : Infinity;
+
+      if (dt > SCANNER_MAX_INTER_KEY_MS) {
+        const editableTarget =
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement
+            ? target
+            : null;
+
+        preBurstSnapshot = {
+          element: editableTarget,
+          domValue: editableTarget ? editableTarget.value : '',
+          cartSnapshot: cartRef.current.map(line => ({ ...line })),
+          fieldsSnapshot: { ...latestPosFieldsRef.current }
+        };
+        burstChars = [e.key];
+        firstKeyTime = now;
+        lastKeyTime = now;
+        isBurstLocked = false;
+        return;
+      }
+
+      // تتابع سريع من قارئ الباركود (الفاصل الزمني <= 50ms)
+      burstChars.push(e.key);
+      lastKeyTime = now;
+
+      if (!isBurstLocked) {
+        isBurstLocked = true;
+        restorePreBurstSnapshot();
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown, true);
+    };
+  }, [
+    isCameraModalOpen,
+    isFormulaModalOpen,
+    pendingWarehouseSwitch,
+    pendingPlatformSwitch,
+    pendingModeSwitch,
+    pendingDraftPrompt,
+    isUiAppearanceOpen,
+    commitCart
+  ]);
+
   const handleManualBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (barcodeInput.trim()) {
@@ -2026,7 +2400,7 @@ export const POSPage: React.FC<POSPageProps> = ({
       removeFromCart(itemId);
       return;
     }
-    const cItem = cart.find(c => c.item.id === itemId);
+    const cItem = cartRef.current.find(c => c.item.id === itemId);
     if (!cItem) return;
 
     if (!effectiveAllowNegativeStock && qty > cItem.item.stockQuantity) {
@@ -2034,16 +2408,16 @@ export const POSPage: React.FC<POSPageProps> = ({
       if (clamped <= 0) {
         removeFromCart(itemId);
       } else {
-        setCart(cart.map(c => c.item.id === itemId ? { ...c, quantity: clamped } : c));
+        commitCart(prev => prev.map(c => c.item.id === itemId ? { ...c, quantity: clamped } : c));
       }
       setErrorMsg(`الكمية لا تكفي. المتاح: ${cItem.item.stockQuantity}`);
       return;
     }
-    setCart(cart.map(c => c.item.id === itemId ? { ...c, quantity: qty } : c));
+    commitCart(prev => prev.map(c => c.item.id === itemId ? { ...c, quantity: qty } : c));
   };
 
   const removeFromCart = (itemId: string) => {
-    setCart(cart.filter(c => c.item.id !== itemId));
+    commitCart(prev => prev.filter(c => c.item.id !== itemId));
     setSelectedCartItemId(prev => (prev === itemId ? null : prev));
     setPriceViolatingItemIds(prev => {
       if (!prev.has(itemId)) return prev;
@@ -2718,7 +3092,10 @@ export const POSPage: React.FC<POSPageProps> = ({
     >
       
       {/* 1. شاشة البيع: صفحة متكاملة بدون أي scroll داخلي والصفحة كلها تعمل scroll مع بعض */}
-      <div className={`${activeMobileTab === 'history' ? 'hidden md:flex' : 'flex'} flex-col w-full mb-2 md:mb-6`}>
+      <div
+        ref={posActiveScreenRef}
+        className={`${activeMobileTab === 'history' ? 'hidden md:flex' : 'flex'} flex-col w-full mb-2 md:mb-6`}
+      >
         
         {/* شريط الأدوات العلوي */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -3588,7 +3965,13 @@ export const POSPage: React.FC<POSPageProps> = ({
 
       {/* مودال تأكيد تغيير المخزن عند وجود أصناف في السلة */}
       {pendingWarehouseSwitch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs" dir="rtl">
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-shortcut-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+          dir="rtl"
+        >
           <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="p-5 bg-amber-50 border-b border-amber-200 flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
@@ -3632,7 +4015,13 @@ export const POSPage: React.FC<POSPageProps> = ({
 
       {/* مودال تأكيد حذف الأصناف غير المتاحة عند تغيير المنصة */}
       {pendingPlatformSwitch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs" dir="rtl">
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-shortcut-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+          dir="rtl"
+        >
           <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="p-5 bg-amber-50 border-b border-amber-200 flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
@@ -3685,7 +4074,13 @@ export const POSPage: React.FC<POSPageProps> = ({
 
       {/* مودال تأكيد تبديل وضع البيع (بيع على منصة <-> بيع لعميل) عند وجود أصناف في السلة */}
       {pendingModeSwitch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs" dir="rtl">
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-shortcut-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+          dir="rtl"
+        >
           <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="p-5 bg-amber-50 border-b border-amber-200 flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
@@ -3858,7 +4253,13 @@ export const POSPage: React.FC<POSPageProps> = ({
 
       {/* مودال استكمال أو تجاهل مسودة الفاتورة غير المحفوظة */}
       {pendingDraftPrompt && (
-        <div className="no-print fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs" dir="rtl">
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-shortcut-modal="true"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+          dir="rtl"
+        >
           <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="p-5 bg-cyan-50 border-b border-cyan-200 flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-cyan-100 text-cyan-800 flex items-center justify-center shrink-0">
