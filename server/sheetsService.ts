@@ -58,7 +58,11 @@ import {
   type StoredUser
 } from './mockData.ts';
 export { OFFLINE_PBKDF2_ITERATIONS, computeOfflinePasswordVerifier, MAIN_WAREHOUSE_ID, validatePasswordRules, validateContactNumber };
-import { isValidAppTheme } from '../src/types/index.ts';
+import {
+  isValidAppTheme,
+  isValidInactivityTimeoutMinutes,
+  normalizeInactivityTimeoutMinutes
+} from '../src/types/index.ts';
 import type {
   Item,
   ProductCategory,
@@ -14275,7 +14279,9 @@ export async function saveContactSettings(
  * قراءة إعدادات هوية ومظهر الشركة
  */
 export function getCompanySettings(): CompanySettings {
-  return { ...defaultCompanySettings, ...memoryCompanySettings };
+  const merged = { ...defaultCompanySettings, ...memoryCompanySettings };
+  merged.inactivityTimeoutMinutes = normalizeInactivityTimeoutMinutes(merged.inactivityTimeoutMinutes);
+  return merged;
 }
 
 /**
@@ -14287,6 +14293,14 @@ export async function saveCompanySettings(settings: Partial<CompanySettings>, se
       success: false,
       statusCode: 400,
       error: `قيمة الثيم المختار غير صالحة (${String(settings.appTheme)})`
+    };
+  }
+
+  if (settings.inactivityTimeoutMinutes !== undefined && !isValidInactivityTimeoutMinutes(settings.inactivityTimeoutMinutes)) {
+    return {
+      success: false,
+      statusCode: 400,
+      error: 'قيمة مهلة تسجيل الخروج بعد عدم النشاط غير صالحة. القيم المسموحة: 15 أو 30 دقيقة، أو 1، 2، 4، 8، 12، 24 ساعة.'
     };
   }
 
@@ -14312,12 +14326,18 @@ export async function saveCompanySettings(settings: Partial<CompanySettings>, se
     }
   }
 
+  const prevTimeout = normalizeInactivityTimeoutMinutes(memoryCompanySettings.inactivityTimeoutMinutes);
+  const nextTimeout = settings.inactivityTimeoutMinutes !== undefined
+    ? normalizeInactivityTimeoutMinutes(settings.inactivityTimeoutMinutes)
+    : prevTimeout;
+
   const config = getSystemConfig();
   const nextSettings: CompanySettings = {
     ...defaultCompanySettings,
     ...memoryCompanySettings,
     ...settings,
-    ...sanitizedContact
+    ...sanitizedContact,
+    inactivityTimeoutMinutes: nextTimeout
   };
 
   if (isSheetsDataMode(config)) {
@@ -14332,7 +14352,11 @@ export async function saveCompanySettings(settings: Partial<CompanySettings>, se
   }
 
   memoryCompanySettings = nextSettings;
-  recordAuditLog(session || {}, 'SETTINGS_COMPANY', 'Settings', 'Company', 'تحديث هوية ومظهر الشركة');
+  importPersistedConfig({ inactivityTimeoutMinutes: nextTimeout });
+  const timeoutChangedNote = prevTimeout !== nextTimeout
+    ? ` (تعديل مهلة عدم النشاط من ${prevTimeout} إلى ${nextTimeout} دقيقة)`
+    : '';
+  recordAuditLog(session || {}, 'SETTINGS_COMPANY', 'Settings', 'Company', `تحديث هوية ومظهر الشركة${timeoutChangedNote}`);
   return { success: true, settings: memoryCompanySettings };
 }
 

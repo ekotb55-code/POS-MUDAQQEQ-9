@@ -177,7 +177,8 @@ export const defaultCompanySettings: CompanySettings = {
   supportWhatsapp: '',
   supportPhone: '',
   salesWhatsapp: '',
-  salesPhone: ''
+  salesPhone: '',
+  inactivityTimeoutMinutes: 480
 };
 
 // إعدادات الفاتورة والطباعة الافتراضية

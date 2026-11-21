@@ -28,7 +28,10 @@ import {
   ImagesMigrationResult,
   Item,
   ProductCategory,
-  InvoiceNumberingSettings
+  InvoiceNumberingSettings,
+  InactivityTimeoutMinutes,
+  ActiveUserSessionInfo,
+  normalizeInactivityTimeoutMinutes
 } from '../types';
 import {
   LabelSettings,
@@ -121,7 +124,10 @@ import {
   ArrowUp,
   ArrowDown,
   Image as ImageIcon,
-  Printer
+  Printer,
+  LogOut,
+  Clock,
+  Monitor
 } from 'lucide-react';
 import {
   PageSurface,
@@ -197,6 +203,17 @@ export interface ThemeDefinition {
   };
   swatches: { name: string; hex: string }[];
 }
+
+export const INACTIVITY_TIMEOUT_OPTIONS: Array<{ value: InactivityTimeoutMinutes; label: string }> = [
+  { value: 15, label: '15 دقيقة' },
+  { value: 30, label: '30 دقيقة' },
+  { value: 60, label: 'ساعة' },
+  { value: 120, label: 'ساعتان' },
+  { value: 240, label: '4 ساعات' },
+  { value: 480, label: '8 ساعات' },
+  { value: 720, label: '12 ساعة' },
+  { value: 1440, label: '24 ساعة' }
+];
 
 export const THEME_OPTIONS: ThemeDefinition[] = [
   {
@@ -745,7 +762,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     accentColor: '#14b8a6',
     fontFamily: 'Tajawal',
     enableDeliveryFee: Boolean(cfg.companySettings?.enableDeliveryFee ?? cfg.enableDeliveryFee),
-    ...(cfg.companySettings || {})
+    ...(cfg.companySettings || {}),
+    inactivityTimeoutMinutes: normalizeInactivityTimeoutMinutes(
+      cfg.companySettings?.inactivityTimeoutMinutes ?? cfg.inactivityTimeoutMinutes
+    )
   });
 
   const buildInitialContact = (cfg: SystemConfig): ContactSettings => ({
@@ -1197,7 +1217,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       companySettings.commercialRecord !== committedCompany.commercialRecord ||
       companySettings.phone !== committedCompany.phone ||
       companySettings.email !== committedCompany.email ||
-      companySettings.address !== committedCompany.address;
+      companySettings.address !== committedCompany.address ||
+      normalizeInactivityTimeoutMinutes(companySettings.inactivityTimeoutMinutes) !==
+        normalizeInactivityTimeoutMinutes(committedCompany.inactivityTimeoutMinutes);
 
     const contactDirty =
       contactSettings.supportWhatsapp !== committedContact.supportWhatsapp ||
@@ -1536,7 +1558,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             commercialRecord: companySettings.commercialRecord,
             phone: companySettings.phone,
             email: companySettings.email,
-            address: companySettings.address
+            address: companySettings.address,
+            inactivityTimeoutMinutes: normalizeInactivityTimeoutMinutes(companySettings.inactivityTimeoutMinutes)
           };
           const res = await api.saveCompanySettings(payload);
           if (res && res.success === false) {
@@ -2267,7 +2290,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     }
   };
 
-  // User Management & Cashbox Modal State
+  // User Management, Active Sessions & Cashbox Modal State
   const [cashboxes, setCashboxes] = useState<Cashbox[]>([]);
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState<'ALL' | UserRole>('ALL');
@@ -2277,6 +2300,125 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [isDeletingUser, setIsDeletingUser] = useState(false);
   const [userActionFeedback, setUserActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [statusToggleLoadingId, setStatusToggleLoadingId] = useState<string | null>(null);
+
+  const [activeSessions, setActiveSessions] = useState<ActiveUserSessionInfo[]>([]);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [isSavingQuickTimeout, setIsSavingQuickTimeout] = useState(false);
+  const [sessionTerminationTarget, setSessionTerminationTarget] = useState<
+    | { mode: 'single'; session: ActiveUserSessionInfo }
+    | { mode: 'all'; user: UserAccount; count: number }
+    | null
+  >(null);
+  const [isTerminatingSession, setIsTerminatingSession] = useState(false);
+
+  const canTerminateSessions = isOwner || hasPermission(currentUser, 'users.edit') || hasPermission(currentUser, 'users.status');
+
+  const loadUserSessions = useCallback(async () => {
+    if (!canManageUsers) return;
+    setIsLoadingSessions(true);
+    try {
+      const res = await api.getUserSessions();
+      if (res.success && Array.isArray(res.sessions)) {
+        setActiveSessions(res.sessions);
+      }
+    } catch (_) {
+      // ignore background/network fetch failure
+    } finally {
+      setIsLoadingSessions(false);
+    }
+  }, [canManageUsers]);
+
+  useEffect(() => {
+    if (activeTab === 'users' && canManageUsers) {
+      loadUserSessions();
+    }
+  }, [activeTab, canManageUsers, loadUserSessions]);
+
+  const handleQuickSaveInactivityTimeout = async (nextMinutes: InactivityTimeoutMinutes) => {
+    if (!canManageCompany || isSavingQuickTimeout) return;
+    const normalized = normalizeInactivityTimeoutMinutes(nextMinutes);
+    setCompanySettings((prev) => ({ ...prev, inactivityTimeoutMinutes: normalized }));
+    setIsSavingQuickTimeout(true);
+    setUserActionFeedback(null);
+    try {
+      const payload: CompanySettings = {
+        ...committedCompany,
+        ...companySettings,
+        inactivityTimeoutMinutes: normalized
+      };
+      const res = await api.saveCompanySettings(payload);
+      if (!res.success) {
+        throw new Error(res.error || 'تعذر حفظ مهلة تسجيل الخروج بعد عدم النشاط');
+      }
+      setCommittedCompany(payload);
+      setCompanySettings(payload);
+      const labelObj = INACTIVITY_TIMEOUT_OPTIONS.find((o) => o.value === normalized);
+      setUserActionFeedback({
+        type: 'success',
+        message: `تم تحديث مهلة تسجيل الخروج بعد عدم النشاط إلى (${labelObj?.label || `${normalized} دقيقة`}) وتطبيقها على الجلسات الحالية والجديدة.`
+      });
+      await onSyncAll();
+    } catch (err: any) {
+      setCompanySettings((prev) => ({
+        ...prev,
+        inactivityTimeoutMinutes: committedCompany.inactivityTimeoutMinutes
+      }));
+      setUserActionFeedback({
+        type: 'error',
+        message: err?.message || 'تعذر حفظ مهلة تسجيل الخروج بعد عدم النشاط'
+      });
+    } finally {
+      setIsSavingQuickTimeout(false);
+    }
+  };
+
+  const handleConfirmTerminateSession = async () => {
+    if (!sessionTerminationTarget || isTerminatingSession) return;
+    setIsTerminatingSession(true);
+    setUserActionFeedback(null);
+    try {
+      if (sessionTerminationTarget.mode === 'single') {
+        const { session } = sessionTerminationTarget;
+        const res = await api.terminateUserSession(session.userId, session.sessionId);
+        if (!res.success) {
+          throw new Error(res.error || 'تعذر إنهاء الجلسة');
+        }
+        setSessionTerminationTarget(null);
+        if (res.terminatedCurrentSession) {
+          onLogout?.();
+          return;
+        }
+        setUserActionFeedback({
+          type: 'success',
+          message: res.message || `تم إنهاء جلسة المستخدم «${session.name}» على الجهاز (${session.deviceName}) بنجاح`
+        });
+      } else {
+        const { user: targetUser } = sessionTerminationTarget;
+        const res = await api.terminateAllUserSessions(targetUser.id);
+        if (!res.success) {
+          throw new Error(res.error || 'تعذر إنهاء جلسات المستخدم');
+        }
+        setSessionTerminationTarget(null);
+        if (res.terminatedCurrentSession) {
+          onLogout?.();
+          return;
+        }
+        setUserActionFeedback({
+          type: 'success',
+          message: res.message || `تم إنهاء جميع الجلسات النشطة للمستخدم «${targetUser.name}» بنجاح`
+        });
+      }
+      await loadUserSessions();
+    } catch (err: any) {
+      setUserActionFeedback({
+        type: 'error',
+        message: err?.message || 'تعذر إنهاء الجلسة'
+      });
+      setSessionTerminationTarget(null);
+    } finally {
+      setIsTerminatingSession(false);
+    }
+  };
 
   useEffect(() => {
     api.getCashboxes().then((res) => {
@@ -2346,6 +2488,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           message: `تم ${isCurrentlyActive ? 'إيقاف' : 'تنشيط'} حساب المستخدم (${user.name}) وإنهاء جلساته فورياً!`
         });
         await onSyncAll();
+        await loadUserSessions();
       } else {
         setUserActionFeedback({
           type: 'error',
@@ -3190,6 +3333,40 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs font-mono text-left`}
               />,
               'contact-sales-phone'
+            )}
+          </div>
+
+          <SectionHeading
+            title="الأمان وجلسات المستخدمين"
+            withTopDivider
+            actions={
+              <span className="text-xs text-[var(--text-secondary)]">
+                يُطبَّق على الجلسات الحالية والجديدة ويُحفظ ضمن إعدادات النظام الدائمة
+              </span>
+            }
+          />
+          <div>
+            {renderSettingRow(
+              'تسجيل الخروج بعد عدم النشاط',
+              'المدة التي يُنهي بعدها النظام جلسة المستخدم تلقائياً عند توقف التفاعل الفعلي مع التطبيق (طلبات الفحص الخلفية لا تُحتسب كنشاط).',
+              <select
+                id="company-inactivity-timeout"
+                value={normalizeInactivityTimeoutMinutes(companySettings.inactivityTimeoutMinutes)}
+                onChange={(e) =>
+                  setCompanySettings({
+                    ...companySettings,
+                    inactivityTimeoutMinutes: normalizeInactivityTimeoutMinutes(Number(e.target.value))
+                  })
+                }
+                className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs font-semibold`}
+              >
+                {INACTIVITY_TIMEOUT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>,
+              'company-inactivity-timeout'
             )}
           </div>
         </div>
@@ -6685,43 +6862,80 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             }
           />
 
-          <div className="flex flex-wrap items-end gap-3 pb-3 border-b border-[var(--border-subtle)]">
-            <div>
-              <label
-                htmlFor="users-search-input"
-                className="block text-xs font-semibold text-[var(--text-secondary)] mb-1"
-              >
-                بحث
-              </label>
-              <input
-                id="users-search-input"
-                type="text"
-                value={userSearchQuery}
-                onChange={(e) => setUserSearchQuery(e.target.value)}
-                placeholder="الاسم أو @المستخدم أو الهاتف..."
-                className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs`}
-              />
+          <div className="flex flex-wrap items-end justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label
+                  htmlFor="users-search-input"
+                  className="block text-xs font-semibold text-[var(--text-secondary)] mb-1"
+                >
+                  بحث
+                </label>
+                <input
+                  id="users-search-input"
+                  type="text"
+                  value={userSearchQuery}
+                  onChange={(e) => setUserSearchQuery(e.target.value)}
+                  placeholder="الاسم أو @المستخدم أو الهاتف..."
+                  className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs`}
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="users-role-filter"
+                  className="block text-xs font-semibold text-[var(--text-secondary)] mb-1"
+                >
+                  الدور
+                </label>
+                <select
+                  id="users-role-filter"
+                  value={userRoleFilter}
+                  onChange={(e) => setUserRoleFilter(e.target.value as 'ALL' | UserRole)}
+                  className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs font-semibold`}
+                >
+                  <option value="ALL">الكل ({users.length})</option>
+                  <option value="designer">مصمم / مالك</option>
+                  <option value="manager">مدير</option>
+                  <option value="employee">موظف</option>
+                </select>
+              </div>
             </div>
 
-            <div>
-              <label
-                htmlFor="users-role-filter"
-                className="block text-xs font-semibold text-[var(--text-secondary)] mb-1"
-              >
-                الدور
-              </label>
-              <select
-                id="users-role-filter"
-                value={userRoleFilter}
-                onChange={(e) => setUserRoleFilter(e.target.value as 'ALL' | UserRole)}
-                className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs font-semibold`}
-              >
-                <option value="ALL">الكل ({users.length})</option>
-                <option value="designer">مصمم / مالك</option>
-                <option value="manager">مدير</option>
-                <option value="employee">موظف</option>
-              </select>
-            </div>
+            {canManageCompany && (
+              <div className="flex flex-wrap items-end gap-2">
+                <div>
+                  <label
+                    htmlFor="users-inactivity-timeout-select"
+                    className="block text-xs font-semibold text-[var(--text-secondary)] mb-1"
+                  >
+                    تسجيل الخروج بعد عدم النشاط
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      id="users-inactivity-timeout-select"
+                      disabled={isSavingQuickTimeout}
+                      value={normalizeInactivityTimeoutMinutes(companySettings.inactivityTimeoutMinutes)}
+                      onChange={(e) =>
+                        void handleQuickSaveInactivityTimeout(
+                          normalizeInactivityTimeoutMinutes(Number(e.target.value))
+                        )
+                      }
+                      className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} text-xs font-semibold`}
+                    >
+                      {INACTIVITY_TIMEOUT_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    {isSavingQuickTimeout && (
+                      <RefreshCw className="w-4 h-4 animate-spin text-[var(--text-secondary)]" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {userActionFeedback && (
@@ -6748,7 +6962,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الدور</th>
                 <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الصلاحيات</th>
                 <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>الخزائن المعينة بالعمليات</th>
-                <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الحالة</th>
+                <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الحالة والجلسات</th>
                 <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الإجراءات والتحكم</th>
               </tr>
             </thead>
@@ -6758,6 +6972,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 const isActive = u.status === 'active' || (u.status as any) === 'نشط';
                 const isBusy = statusToggleLoadingId === u.id;
                 const cfg = u.cashboxConfig;
+                const userSessions = activeSessions.filter((s) => s.userId === u.id);
+                const canTerminateThisUser = canTerminateSessions && (!isOwnerUser || isOwner);
 
                 const saleDefaultName = cashboxes.find((c) => c.id === cfg?.defaultSaleCashboxId)?.name;
                 const returnDefaultName = cashboxes.find((c) => c.id === cfg?.defaultReturnCashboxId)?.name;
@@ -6834,13 +7050,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </td>
 
                     <td className={`text-center font-bold ${COMPACT_TABLE_NUM_CLASS}`}>
-                      <span className={isActive ? 'ui-money-purchase' : 'ui-stock-out'}>
+                      <div className={isActive ? 'ui-money-purchase' : 'ui-stock-out'}>
                         {isActive ? 'نشط' : 'موقوف'}
-                      </span>
+                      </div>
+                      <div className="text-[11px] font-normal text-[var(--text-secondary)]">
+                        {userSessions.length > 0 ? `${userSessions.length} جلسة نشطة` : 'لا توجد جلسة نشطة'}
+                      </div>
                     </td>
 
                     <td className={COMPACT_TABLE_NUM_CLASS}>
-                      <div className="flex items-center justify-center gap-1.5">
+                      <div className="flex flex-wrap items-center justify-center gap-1.5">
                         {canEditUser && (
                           <button
                             type="button"
@@ -6850,6 +7069,25 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           >
                             <Edit3 className="w-3.5 h-3.5" />
                             <span>تعديل</span>
+                          </button>
+                        )}
+
+                        {canTerminateThisUser && userSessions.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSessionTerminationTarget({
+                                mode: 'all',
+                                user: u,
+                                count: userSessions.length
+                              })
+                            }
+                            disabled={isBusy || isTerminatingSession}
+                            className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-low font-bold text-xs cursor-pointer"
+                            title="إنهاء كل الجلسات النشطة لهذا المستخدم"
+                          >
+                            <LogOut className="w-3.5 h-3.5" />
+                            <span>إنهاء كل الجلسات ({userSessions.length})</span>
                           </button>
                         )}
 
@@ -6893,6 +7131,133 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               )}
             </tbody>
           </CompactTable>
+
+          {/* قسم الجلسات النشطة للمستخدمين */}
+          <div className="pt-4 space-y-3">
+            <SectionHeading
+              title={`الجلسات النشطة للمستخدمين (${activeSessions.length})`}
+              withTopDivider
+              actions={
+                <button
+                  type="button"
+                  onClick={() => void loadUserSessions()}
+                  disabled={isLoadingSessions}
+                  className="min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] text-[var(--text-primary)] font-bold text-xs transition cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSessions ? 'animate-spin' : ''}`} />
+                  <span>تحديث الجلسات</span>
+                </button>
+              }
+            />
+
+            <CompactTable ariaLabel="جدول الجلسات النشطة للمستخدمين">
+              <thead>
+                <tr>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>المستخدم</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>الجهاز</th>
+                  <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>وقت آخر نشاط</th>
+                  <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الإجراءات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeSessions.map((sess) => {
+                  const isTargetOwner = sess.role === 'designer';
+                  const canTerminateThisSession = canTerminateSessions && (!isTargetOwner || isOwner);
+                  const userTotalSessions = activeSessions.filter((s) => s.userId === sess.userId).length;
+                  const targetUserAccount = users.find((u) => u.id === sess.userId) || {
+                    id: sess.userId,
+                    username: sess.username,
+                    name: sess.name,
+                    role: sess.role,
+                    status: 'active',
+                    permissions: []
+                  };
+
+                  return (
+                    <tr key={sess.sessionId}>
+                      <td className={COMPACT_TABLE_TEXT_CLASS}>
+                        <div className="font-bold text-[var(--text-primary)]">
+                          {sess.name}
+                          <span className="mr-1.5 text-[11px] font-normal text-[var(--text-secondary)]">
+                            ({sess.role === 'designer' ? 'مصمم / مالك' : sess.role === 'manager' ? 'مدير' : 'موظف'})
+                          </span>
+                        </div>
+                        <div className="text-[11px] font-mono text-[var(--text-secondary)]">
+                          @{sess.username}
+                        </div>
+                      </td>
+
+                      <td className={COMPACT_TABLE_TEXT_CLASS}>
+                        <div className="flex items-center gap-1.5 font-semibold text-[var(--text-primary)]">
+                          <Monitor className="w-3.5 h-3.5 text-[var(--text-secondary)] shrink-0" />
+                          <span>{sess.deviceName || 'متصفح ويب'}</span>
+                          {sess.isCurrentSession && (
+                            <span className="text-[11px] ui-money-purchase font-bold">
+                              • الجلسة الحالية
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      <td className={`text-center font-mono text-xs text-[var(--text-secondary)] ${COMPACT_TABLE_NUM_CLASS}`}>
+                        <span className="inline-flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5 shrink-0" />
+                          <span>{formatDateTimeCairo(sess.lastActivityAt)}</span>
+                        </span>
+                      </td>
+
+                      <td className={COMPACT_TABLE_NUM_CLASS}>
+                        <div className="flex flex-wrap items-center justify-center gap-1.5">
+                          {canTerminateThisSession ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setSessionTerminationTarget({ mode: 'single', session: sess })}
+                                disabled={isTerminatingSession}
+                                className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-out font-bold text-xs cursor-pointer"
+                                title="إنهاء هذه الجلسة فوراً على الخادم"
+                              >
+                                <LogOut className="w-3.5 h-3.5" />
+                                <span>إنهاء الجلسة</span>
+                              </button>
+
+                              {userTotalSessions > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSessionTerminationTarget({
+                                      mode: 'all',
+                                      user: targetUserAccount,
+                                      count: userTotalSessions
+                                    })
+                                  }
+                                  disabled={isTerminatingSession}
+                                  className="min-h-[44px] inline-flex items-center gap-1 px-2.5 rounded-lg border border-[var(--border-color)] hover:bg-[var(--surface-subtle)] ui-stock-low font-bold text-xs cursor-pointer"
+                                  title="إنهاء كل الجلسات النشطة لهذا المستخدم"
+                                >
+                                  <span>إنهاء كل الجلسات ({userTotalSessions})</span>
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-xs text-[var(--text-secondary)]">—</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {activeSessions.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="text-center text-[var(--text-secondary)] py-6">
+                      {isLoadingSessions ? 'جاري تحميل الجلسات النشطة...' : 'لا توجد جلسات نشطة مسجلة حالياً'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </CompactTable>
+          </div>
         </div>
       )}
 
@@ -7144,6 +7509,69 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           <p className="text-xs text-[var(--text-secondary)] leading-relaxed max-w-md">
             هل أنت متأكد من حذف هذه الصورة من شاشة الزوار؟
           </p>
+        </ModalShell>
+      )}
+
+      {sessionTerminationTarget && (
+        <ModalShell
+          title={
+            sessionTerminationTarget.mode === 'single'
+              ? 'تأكيد إنهاء الجلسة'
+              : 'تأكيد إنهاء جميع جلسات المستخدم'
+          }
+          subtitle="إبطال الجلسة فوراً على الخادم وتسجيل العملية في سجل المراجعة"
+          onClose={() => !isTerminatingSession && setSessionTerminationTarget(null)}
+          closeDisabled={isTerminatingSession}
+          footer={
+            <>
+              <button
+                type="button"
+                disabled={isTerminatingSession}
+                onClick={() => setSessionTerminationTarget(null)}
+                className="min-h-[44px] px-4 rounded-lg border border-[var(--border-color)] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)] text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isTerminatingSession}
+                onClick={() => void handleConfirmTerminateSession()}
+                className="min-h-[44px] inline-flex items-center gap-2 px-5 rounded-lg bg-[#D9524F] hover:bg-[#B42318] text-white text-xs font-bold cursor-pointer"
+              >
+                {isTerminatingSession && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                <span>
+                  {sessionTerminationTarget.mode === 'single'
+                    ? 'تأكيد إنهاء الجلسة'
+                    : 'تأكيد إنهاء كل الجلسات'}
+                </span>
+              </button>
+            </>
+          }
+        >
+          <div className="text-xs text-[var(--text-secondary)] leading-relaxed max-w-md space-y-1.5">
+            {sessionTerminationTarget.mode === 'single' ? (
+              <>
+                <p className="font-bold ui-stock-out">
+                  هل أنت متأكد من إنهاء جلسة المستخدم «{sessionTerminationTarget.session.name}» (@{sessionTerminationTarget.session.username})؟
+                </p>
+                <p>
+                  الجهاز: <strong className="text-[var(--text-primary)]">{sessionTerminationTarget.session.deviceName || 'متصفح ويب'}</strong>
+                </p>
+                <p>
+                  سيتم إبطال الجلسة على الخادم فوراً وإرجاع المستخدم لشاشة تسجيل الدخول عند أول طلب أو فحص للجلسة.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-bold ui-stock-out">
+                  هل أنت متأكد من إنهاء جميع الجلسات النشطة ({sessionTerminationTarget.count}) للمستخدم «{sessionTerminationTarget.user.name}» (@{sessionTerminationTarget.user.username})؟
+                </p>
+                <p>
+                  سيتم إبطال جميع جلسات هذا المستخدم على الخادم فوراً وإخراجه من جميع الأجهزة المفتوحة.
+                </p>
+              </>
+            )}
+          </div>
         </ModalShell>
       )}
     </PageSurface>

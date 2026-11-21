@@ -101,7 +101,9 @@ import {
   DeliveryDriverUpdateStatusPayload,
   DeliveryDriverUpdateStatusResponse,
   DeliveryReportsParams,
-  DeliveryReportsResponse
+  DeliveryReportsResponse,
+  ActiveUserSessionInfo,
+  InactivityTimeoutMinutes
 } from '../types';
 import type { LabelSettings } from '../utils/labelPrint';
 
@@ -246,10 +248,65 @@ export function notifyManualBalanceUpdated(): void {
   emitApiStatus({ type: 'MANUAL_BALANCE_UPDATED' });
 }
 
-let sessionExpiredHandler: (() => void) | null = null;
+let sessionExpiredHandler: ((message?: string) => void) | null = null;
 
-export function setOnSessionExpired(handler: () => void) {
+export function setOnSessionExpired(handler: (message?: string) => void) {
   sessionExpiredHandler = handler;
+}
+
+let lastDomUserInteractionAt = Date.now();
+let lastForegroundApiActivitySentAt = 0;
+
+export function getLastUserInteractionAt(): number {
+  return lastDomUserInteractionAt;
+}
+
+export function getLastForegroundApiActivitySentAt(): number {
+  return lastForegroundApiActivitySentAt;
+}
+
+export function recordUserInteraction(): void {
+  lastDomUserInteractionAt = Date.now();
+}
+
+if (typeof window !== 'undefined') {
+  const onDomInteraction = () => {
+    lastDomUserInteractionAt = Date.now();
+  };
+  window.addEventListener('pointerdown', onDomInteraction, { passive: true });
+  window.addEventListener('keydown', onDomInteraction, { passive: true });
+  window.addEventListener('touchstart', onDomInteraction, { passive: true });
+  window.addEventListener('wheel', onDomInteraction, { passive: true });
+  window.addEventListener('click', onDomInteraction, { passive: true });
+}
+
+function getClientDeviceInfo(): { deviceName: string; deviceId: string } {
+  let deviceName = '';
+  let deviceId = '';
+  try {
+    deviceName = (localStorage.getItem('mudaqqeq_device_name_v1') || '').trim();
+    deviceId = (localStorage.getItem('mudaqqeq_device_id_v1') || '').trim();
+  } catch (_) {}
+
+  if (!deviceName && typeof navigator !== 'undefined') {
+    const ua = navigator.userAgent || '';
+    let browser = 'متصفح';
+    if (/Edg\//i.test(ua)) browser = 'Edge';
+    else if (/OPR\/|Opera/i.test(ua)) browser = 'Opera';
+    else if (/Chrome\//i.test(ua)) browser = 'Chrome';
+    else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+    else if (/Safari\//i.test(ua)) browser = 'Safari';
+
+    let os = '';
+    if (/Windows/i.test(ua)) os = 'Windows';
+    else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+    else if (/Android/i.test(ua)) os = 'Android';
+    else if (/Mac OS X|Macintosh/i.test(ua)) os = 'Mac';
+    else if (/Linux/i.test(ua)) os = 'Linux';
+    deviceName = os ? `${browser} على ${os}` : browser;
+  }
+
+  return { deviceName: deviceName || 'متصفح ويب', deviceId };
 }
 
 function getAuthToken(): string | null {
@@ -309,24 +366,51 @@ async function runWithTimeout<T>(
   }
 }
 
-async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(endpoint: string, options: RequestInit & { background?: boolean } = {}): Promise<T> {
   const token = getAuthToken();
+  const { background, ...fetchOptions } = options;
   const headers: Record<string, string> = {
     'Accept': 'application/json',
-    ...(options.headers as Record<string, string> || {})
+    ...(fetchOptions.headers as Record<string, string> || {})
   };
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  if (options.body && typeof options.body === 'string' && !headers['Content-Type']) {
+  const { deviceName, deviceId } = getClientDeviceInfo();
+  if (deviceName && !headers['X-Device-Name']) {
+    headers['X-Device-Name'] = encodeURIComponent(deviceName);
+  }
+  if (deviceId && !headers['X-Device-Id']) {
+    headers['X-Device-Id'] = encodeURIComponent(deviceId);
+  }
+
+  const isBackgroundRequest =
+    Boolean(background) ||
+    headers['X-Background-Poll'] === '1' ||
+    endpoint.startsWith('/api/health');
+
+  if (isBackgroundRequest) {
+    headers['X-Background-Poll'] = '1';
+    headers['X-User-Activity'] = '0';
+  } else {
+    const now = Date.now();
+    const isRecentUserInteraction = now - lastDomUserInteractionAt < 60_000;
+    const isMutation = Boolean(fetchOptions.method && fetchOptions.method !== 'GET' && fetchOptions.method !== 'HEAD');
+    if (isRecentUserInteraction || isMutation) {
+      headers['X-User-Activity'] = '1';
+      lastForegroundApiActivitySentAt = now;
+    }
+  }
+
+  if (fetchOptions.body && typeof fetchOptions.body === 'string' && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
 
-  return runWithTimeout<T>(options.signal, async (signal) => {
+  return runWithTimeout<T>(fetchOptions.signal, async (signal) => {
     const res = await fetch(endpoint, {
-      ...options,
+      ...fetchOptions,
       headers,
       signal
     });
@@ -334,11 +418,12 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   if (res.status === 401) {
     let errJson: any = null;
     try { errJson = await res.json(); } catch (_) {}
+    const errMessage = errJson?.error || 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا';
     const isBrowserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
     if (!isBrowserOffline && !endpoint.startsWith('/api/auth/login') && sessionExpiredHandler) {
-      sessionExpiredHandler();
+      sessionExpiredHandler(errMessage);
     }
-    const err = new Error(errJson?.error || 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا');
+    const err = new Error(errMessage);
     (err as any).status = 401;
     (err as any).code = errJson?.code;
     throw err;
@@ -437,7 +522,7 @@ export const api = {
     connectionHealth: ConnectionHealth;
     timestamp: string;
   }> {
-    return request('/api/health');
+    return request('/api/health', { background: true });
   },
 
   async getConfig(): Promise<SystemConfig & { persistenceMode?: 'supabase' | 'none' }> {
@@ -673,8 +758,26 @@ export const api = {
     }
   },
 
-  async getMe(): Promise<{ success: boolean; user: UserAccount; expiresAt: number }> {
-    return request('/api/auth/me');
+  async getMe(options?: { background?: boolean }): Promise<{
+    success: boolean;
+    user: UserAccount;
+    sessionId?: string;
+    lastActivityAt?: string;
+    inactivityTimeoutMinutes?: InactivityTimeoutMinutes;
+    expiresAt: number;
+  }> {
+    return request('/api/auth/me', { background: options?.background });
+  },
+
+  async pingActivity(): Promise<{
+    success: boolean;
+    lastActivityAt: string;
+    inactivityTimeoutMinutes: InactivityTimeoutMinutes;
+  }> {
+    return request('/api/auth/activity', {
+      method: 'POST',
+      body: JSON.stringify(getClientDeviceInfo())
+    });
   },
 
   async completeInitialAccountSetup(payload: {
@@ -1643,6 +1746,39 @@ export const api = {
     });
   },
 
+  async getUserSessions(): Promise<{
+    success: boolean;
+    sessions: ActiveUserSessionInfo[];
+    inactivityTimeoutMinutes?: InactivityTimeoutMinutes;
+    error?: string;
+  }> {
+    return request('/api/users/sessions');
+  },
+
+  async terminateUserSession(userId: string, sessionId: string): Promise<{
+    success: boolean;
+    terminatedCount?: number;
+    terminatedCurrentSession?: boolean;
+    message?: string;
+    error?: string;
+  }> {
+    return request(`/api/users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE'
+    });
+  },
+
+  async terminateAllUserSessions(userId: string): Promise<{
+    success: boolean;
+    terminatedCount?: number;
+    terminatedCurrentSession?: boolean;
+    message?: string;
+    error?: string;
+  }> {
+    return request(`/api/users/${encodeURIComponent(userId)}/sessions`, {
+      method: 'DELETE'
+    });
+  },
+
   // Permissions
   async getPermissions(): Promise<{ success: boolean; permissions: PermissionDefinition[]; templates: Record<string, PermissionKey[]> }> {
     return request('/api/permissions');
@@ -2405,8 +2541,8 @@ export const api = {
   },
 
   // Manual Balance Tracking (Privacy Mode — without reading SMS)
-  async getManualBalanceRequests(): Promise<ManualBalanceRequestsResponse> {
-    return request<ManualBalanceRequestsResponse>('/api/bank-link/balance-requests');
+  async getManualBalanceRequests(options?: { background?: boolean }): Promise<ManualBalanceRequestsResponse> {
+    return request<ManualBalanceRequestsResponse>('/api/bank-link/balance-requests', { background: options?.background });
   },
 
   async submitManualBalance(

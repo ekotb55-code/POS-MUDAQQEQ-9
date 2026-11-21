@@ -38,9 +38,18 @@ import {
   isValidAppTheme,
   ManualBalanceRequest,
   ManualBalanceAlert,
-  ManualBalanceEntry
+  ManualBalanceEntry,
+  normalizeInactivityTimeoutMinutes
 } from './types';
-import { api, setAuthToken, setOnSessionExpired, subscribeApiStatus } from './api/client';
+import {
+  api,
+  setAuthToken,
+  setOnSessionExpired,
+  subscribeApiStatus,
+  getLastUserInteractionAt,
+  getLastForegroundApiActivitySentAt,
+  recordUserInteraction
+} from './api/client';
 import {
   requestPersistentStorageOnFirstEntry,
   ensureDeviceIdentity,
@@ -389,6 +398,7 @@ export default function App() {
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [sessionExpiredNotice, setSessionExpiredNotice] = useState(false);
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
   const [staleInfo, setStaleInfo] = useState<{ stale: boolean; lastSyncAt: string | null }>({
     stale: false,
     lastSyncAt: null
@@ -561,7 +571,7 @@ export default function App() {
 
   // Handle session expiry from API interceptor (لا يوقف البيع أثناء انقطاع الإنترنت)
   useEffect(() => {
-    setOnSessionExpired(() => {
+    setOnSessionExpired((msg?: string) => {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         return;
       }
@@ -570,6 +580,7 @@ export default function App() {
       localStorage.removeItem('pos_token');
       localStorage.removeItem('pos_session_offline');
       localStorage.removeItem('pos_session_expires_at');
+      setSessionExpiredMessage(msg || null);
       setSessionExpiredNotice(true);
     });
   }, []);
@@ -588,30 +599,125 @@ export default function App() {
       localStorage.removeItem('pos_token');
       localStorage.removeItem('pos_session_offline');
       localStorage.removeItem('pos_session_expires_at');
+      setSessionExpiredMessage(null);
       setSessionExpiredNotice(true);
     }
   }, [isOnline, user]);
 
-  // مزامنة حالة الحساب (مثل mustChangePassword) من الخادم عند وجود جلسة فعّالة
+  // مزامنة حالة الحساب وفحص صلاحية الجلسة ومهلة عدم النشاط
+  const inactivityTimeoutMinutes = normalizeInactivityTimeoutMinutes(
+    config.companySettings?.inactivityTimeoutMinutes ?? config.inactivityTimeoutMinutes
+  );
+
   useEffect(() => {
-    if (!user || !isOnline) return;
+    if (!user) return;
+    recordUserInteraction();
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    const timeoutMs = inactivityTimeoutMinutes * 60 * 1000;
     const isOfflineTok =
       localStorage.getItem('pos_session_offline') === 'true' ||
       Boolean(localStorage.getItem('pos_token')?.startsWith('offline_'));
-    if (isOfflineTok) return;
-    api.getMe()
-      .then((res) => {
-        if (res?.success && res.user) {
-          const nextMustChange = Boolean(res.user.mustChangePassword);
-          if (Boolean(user.mustChangePassword) !== nextMustChange || user.name !== res.user.name || user.username !== res.user.username) {
-            const updated: UserAccount = { ...user, ...res.user, mustChangePassword: nextMustChange };
-            setUser(updated);
-            localStorage.setItem('pos_user', JSON.stringify(updated));
+
+    const syncMeStatus = () => {
+      if (!isOnline || isOfflineTok) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      api.getMe({ background: true })
+        .then((res) => {
+          if (res?.success && res.user) {
+            const nextMustChange = Boolean(res.user.mustChangePassword);
+            if (Boolean(user.mustChangePassword) !== nextMustChange || user.name !== res.user.name || user.username !== res.user.username) {
+              const updated: UserAccount = { ...user, ...res.user, mustChangePassword: nextMustChange };
+              setUser(updated);
+              localStorage.setItem('pos_user', JSON.stringify(updated));
+            }
           }
+          if (res?.inactivityTimeoutMinutes) {
+            const serverTimeout = normalizeInactivityTimeoutMinutes(res.inactivityTimeoutMinutes);
+            setConfig(prev => {
+              const cur = prev.companySettings?.inactivityTimeoutMinutes ?? prev.inactivityTimeoutMinutes;
+              if (cur === serverTimeout) return prev;
+              return {
+                ...prev,
+                inactivityTimeoutMinutes: serverTimeout,
+                companySettings: prev.companySettings
+                  ? { ...prev.companySettings, inactivityTimeoutMinutes: serverTimeout }
+                  : prev.companySettings
+              };
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    syncMeStatus();
+
+    let lastSessionPollAt = Date.now();
+    const intervalId = window.setInterval(() => {
+      const now = Date.now();
+      const idleMs = now - getLastUserInteractionAt();
+
+      // 1) التحقق من تجاوز مهلة عدم النشاط الفعلية للمستخدم
+      if (idleMs >= timeoutMs) {
+        if (isOnline && !isOfflineTok) {
+          api.logout().catch(() => {});
+        } else {
+          setAuthToken(null);
         }
-      })
-      .catch(() => {});
-  }, [isOnline]);
+        setUser(null);
+        localStorage.removeItem('pos_user');
+        localStorage.removeItem('pos_token');
+        localStorage.removeItem('pos_session_offline');
+        localStorage.removeItem('pos_session_expires_at');
+        setSessionExpiredMessage('انتهت الجلسة بسبب عدم النشاط، يرجى تسجيل الدخول مجددًا');
+        setSessionExpiredNotice(true);
+        return;
+      }
+
+      if (!isOnline || isOfflineTok || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+        return;
+      }
+
+      // 2) إرسال نبضة نشاط للخادم فقط إذا كان المستخدم يتفاعل فعليًا ولم يرسل طلبًا أماميًا منذ 90 ثانية
+      if (idleMs < 60_000 && now - getLastForegroundApiActivitySentAt() >= 90_000) {
+        api.pingActivity().catch(() => {});
+      }
+
+      // 3) فحص دوري خفيف لصلاحية الجلسة في الخلفية (لا يُحتسب كنشاط مستخدم) لاكتشاف إنهاء الجلسة من الإدارة
+      if (now - lastSessionPollAt >= 30_000) {
+        lastSessionPollAt = now;
+        syncMeStatus();
+      }
+    }, 10_000);
+
+    const handleWindowFocus = () => {
+      const now = Date.now();
+      if (now - getLastUserInteractionAt() >= timeoutMs) {
+        if (isOnline && !isOfflineTok) {
+          api.logout().catch(() => {});
+        } else {
+          setAuthToken(null);
+        }
+        setUser(null);
+        localStorage.removeItem('pos_user');
+        localStorage.removeItem('pos_token');
+        localStorage.removeItem('pos_session_offline');
+        localStorage.removeItem('pos_session_expires_at');
+        setSessionExpiredMessage('انتهت الجلسة بسبب عدم النشاط، يرجى تسجيل الدخول مجددًا');
+        setSessionExpiredNotice(true);
+        return;
+      }
+      syncMeStatus();
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [user, isOnline, inactivityTimeoutMinutes]);
 
   // Fetch initial config & data
   const loadData = useCallback(async () => {
@@ -1069,7 +1175,7 @@ export default function App() {
     if (!user || user.mustChangePassword || isOffline) return;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     try {
-      const res = await api.getManualBalanceRequests();
+      const res = await api.getManualBalanceRequests({ background: true });
       if (res?.success) {
         setManualBalanceRequests(Array.isArray(res.requests) ? res.requests : []);
         setManualBalanceAlerts(Array.isArray(res.alerts) ? res.alerts : []);
@@ -1175,7 +1281,9 @@ export default function App() {
     if (session.expiresAt) {
       localStorage.setItem('pos_session_expires_at', String(session.expiresAt));
     }
+    recordUserInteraction();
     setSessionExpiredNotice(false);
+    setSessionExpiredMessage(null);
     const normalized = normalizeNavigationTarget('dashboard', undefined, session.user);
     setCurrentPage(normalized.page);
     setCurrentTab(normalized.tab);
@@ -1788,7 +1896,11 @@ export default function App() {
         <LoginPage
           onLoginSuccess={handleLoginSuccess}
           hasManager={config.hasManager}
-          sessionExpiredMsg={sessionExpiredNotice ? (lang === 'ar' ? 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا' : 'Session expired. Please sign in again') : null}
+          sessionExpiredMsg={
+            sessionExpiredNotice
+              ? (sessionExpiredMessage || (lang === 'ar' ? 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا' : 'Session expired. Please sign in again'))
+              : null
+          }
           currentLang={lang}
           onLanguageChange={setLang}
         />

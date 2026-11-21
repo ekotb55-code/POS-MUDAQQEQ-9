@@ -139,7 +139,8 @@ import {
   createSupabaseTransport,
   createPersistenceMiddleware,
   readPersistenceEnv,
-  type RpcTransport
+  type RpcTransport,
+  type CollectionDef
 } from './server/persistence/statePersistence.ts';
 import {
   buildBackup,
@@ -199,13 +200,15 @@ import {
 } from './server/persistence/setupCheck.ts';
 import {
   isValidAppTheme,
+  normalizeInactivityTimeoutMinutes,
   type UserRole,
   type UserAccount,
   type PermissionKey,
   type CompanySettings,
   type InvoicePrintSettings,
   type DisplaySettings,
-  type StockSettings
+  type StockSettings,
+  type ActiveUserSessionInfo
 } from './src/types/index.ts';
 import { ALL_PERMISSIONS, PERMISSIONS, ROLE_TEMPLATES } from './src/utils/permissions.ts';
 export { PERMISSIONS };
@@ -224,8 +227,9 @@ process.on('uncaughtException', (err) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// إدارة الجلسات في الذاكرة مع مدة صلاحية (24 ساعة)
+// إدارة الجلسات مع مدة صلاحية مطلقة (24 ساعة) ومهلة عدم نشاط قابلة للضبط
 export interface SessionData {
+  sessionId: string;
   userId: string;
   username: string;
   phone?: string;
@@ -234,28 +238,222 @@ export interface SessionData {
   permissions: PermissionKey[];
   isOwner: boolean;
   mustChangePassword?: boolean;
+  deviceName: string;
+  deviceId?: string;
+  createdAt: number;
+  lastActivityAt: number;
+  expiresAt: number;
+}
+
+export interface RevokedSessionData {
+  reason: 'TERMINATED_BY_ADMIN' | 'INACTIVITY_TIMEOUT' | 'USER_SUSPENDED';
+  message: string;
+  revokedAt: number;
   expiresAt: number;
 }
 
 const activeSessions = new Map<string, SessionData>();
+const revokedSessions = new Map<string, RevokedSessionData>();
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 ساعة
 
+function getInactivityTimeoutMs(): number {
+  const minutes = normalizeInactivityTimeoutMinutes(getCompanySettings().inactivityTimeoutMinutes);
+  return minutes * 60 * 1000;
+}
+
+function parseUserAgentLabel(uaRaw?: string): string {
+  const ua = String(uaRaw || '').trim();
+  if (!ua) return 'متصفح ويب';
+  let browser = 'متصفح';
+  if (/Edg\//i.test(ua)) browser = 'Edge';
+  else if (/OPR\/|Opera/i.test(ua)) browser = 'Opera';
+  else if (/Chrome\//i.test(ua) && !/Chromium/i.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+  else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) browser = 'Safari';
+
+  let os = '';
+  if (/Windows/i.test(ua)) os = 'Windows';
+  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+  else if (/Android/i.test(ua)) os = 'Android';
+  else if (/Mac OS X|Macintosh/i.test(ua)) os = 'Mac';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+
+  return os ? `${browser} على ${os}` : browser;
+}
+
+function decodeHeaderValue(raw: unknown, maxLen = 120): string {
+  if (typeof raw !== 'string') return '';
+  let val = raw.trim();
+  if (!val) return '';
+  try {
+    val = decodeURIComponent(val).trim();
+  } catch {
+    // keep raw if not URI-encoded
+  }
+  return val.slice(0, maxLen);
+}
+
+function describeDeviceFromRequest(req?: Request): { deviceName: string; deviceId?: string } {
+  const headerDeviceName = decodeHeaderValue(req?.headers?.['x-device-name'], 120);
+  const bodyDeviceName = typeof (req as any)?.body?.deviceName === 'string'
+    ? String((req as any).body.deviceName).trim().slice(0, 120)
+    : '';
+  const uaLabel = parseUserAgentLabel(typeof req?.headers?.['user-agent'] === 'string' ? req.headers['user-agent'] : '');
+  const deviceName = bodyDeviceName || headerDeviceName || uaLabel || 'متصفح ويب';
+
+  const headerDeviceId = decodeHeaderValue(req?.headers?.['x-device-id'], 80);
+  const bodyDeviceId = typeof (req as any)?.body?.deviceId === 'string'
+    ? String((req as any).body.deviceId).trim().slice(0, 80)
+    : '';
+  const deviceId = bodyDeviceId || headerDeviceId || undefined;
+
+  return { deviceName, deviceId };
+}
+
+function pruneExpiredSessions(): void {
+  const now = Date.now();
+  const idleLimitMs = getInactivityTimeoutMs();
+
+  for (const [token, rev] of revokedSessions.entries()) {
+    if (now > rev.expiresAt) {
+      revokedSessions.delete(token);
+    }
+  }
+
+  for (const [token, session] of activeSessions.entries()) {
+    if (now > session.expiresAt) {
+      activeSessions.delete(token);
+      continue;
+    }
+    const lastActive = session.lastActivityAt || session.createdAt || (session.expiresAt - SESSION_TTL_MS);
+    if (now - lastActive > idleLimitMs) {
+      activeSessions.delete(token);
+      revokedSessions.set(token, {
+        reason: 'INACTIVITY_TIMEOUT',
+        message: 'انتهت الجلسة بسبب عدم النشاط، يرجى تسجيل الدخول مجددًا',
+        revokedAt: now,
+        expiresAt: session.expiresAt
+      });
+    }
+  }
+}
+
+function getAuthSessionsCollection(): CollectionDef {
+  return {
+    name: 'state.authSessions',
+    kind: 'single',
+    get: () => {
+      const now = Date.now();
+      return {
+        active: Array.from(activeSessions.entries())
+          .filter(([, s]) => now <= s.expiresAt)
+          .map(([token, s]) => ({
+            token,
+            sessionId: s.sessionId,
+            userId: s.userId,
+            username: s.username,
+            phone: s.phone,
+            name: s.name,
+            role: s.role,
+            permissions: s.permissions,
+            isOwner: s.isOwner,
+            mustChangePassword: Boolean(s.mustChangePassword),
+            deviceName: s.deviceName || 'متصفح ويب',
+            deviceId: s.deviceId,
+            createdAt: s.createdAt,
+            lastActivityAt: s.lastActivityAt,
+            expiresAt: s.expiresAt
+          })),
+        revoked: Array.from(revokedSessions.entries())
+          .filter(([, r]) => now <= r.expiresAt)
+          .map(([token, r]) => ({
+            token,
+            reason: r.reason,
+            message: r.message,
+            revokedAt: r.revokedAt,
+            expiresAt: r.expiresAt
+          }))
+      };
+    },
+    set: (val: any) => {
+      activeSessions.clear();
+      revokedSessions.clear();
+      if (!val || typeof val !== 'object') return;
+      const now = Date.now();
+      if (Array.isArray(val.active)) {
+        for (const item of val.active) {
+          if (!item || typeof item.token !== 'string' || !item.userId) continue;
+          const expiresAt = Number(item.expiresAt) || 0;
+          if (now > expiresAt) continue;
+          const createdAt = Number(item.createdAt) || (expiresAt - SESSION_TTL_MS);
+          const lastActivityAt = Number(item.lastActivityAt) || createdAt;
+          activeSessions.set(item.token, {
+            sessionId: typeof item.sessionId === 'string' && item.sessionId ? item.sessionId : crypto.randomBytes(12).toString('hex'),
+            userId: String(item.userId),
+            username: String(item.username || ''),
+            phone: item.phone ? String(item.phone) : undefined,
+            name: String(item.name || item.username || ''),
+            role: item.role as UserRole,
+            permissions: Array.isArray(item.permissions) ? item.permissions : [],
+            isOwner: Boolean(item.isOwner),
+            mustChangePassword: Boolean(item.mustChangePassword),
+            deviceName: typeof item.deviceName === 'string' && item.deviceName.trim() ? item.deviceName.trim() : 'متصفح ويب',
+            deviceId: typeof item.deviceId === 'string' && item.deviceId.trim() ? item.deviceId.trim() : undefined,
+            createdAt,
+            lastActivityAt,
+            expiresAt
+          });
+        }
+      }
+      if (Array.isArray(val.revoked)) {
+        for (const item of val.revoked) {
+          if (!item || typeof item.token !== 'string') continue;
+          const expiresAt = Number(item.expiresAt) || 0;
+          if (now > expiresAt) continue;
+          revokedSessions.set(item.token, {
+            reason: item.reason || 'TERMINATED_BY_ADMIN',
+            message: typeof item.message === 'string' && item.message ? item.message : 'تم إنهاء الجلسة من قِبل إدارة النظام، يرجى تسجيل الدخول مجددًا',
+            revokedAt: Number(item.revokedAt) || now,
+            expiresAt
+          });
+        }
+      }
+    }
+  };
+}
+
 setOnUserSuspended((suspendedUserId: string) => {
+  const now = Date.now();
   for (const [token, session] of activeSessions.entries()) {
     if (session.userId === suspendedUserId) {
       activeSessions.delete(token);
+      revokedSessions.set(token, {
+        reason: 'USER_SUSPENDED',
+        message: 'تم إيقاف حسابك من قِبل إدارة النظام، يرجى مراجعة المسؤول',
+        revokedAt: now,
+        expiresAt: session.expiresAt
+      });
     }
   }
 });
 
-function createSession(user: UserAccount, existingToken?: string): { token: string; expiresAt: number; permissions: PermissionKey[] } {
+function createSession(
+  user: UserAccount,
+  existingToken?: string,
+  req?: Request
+): { token: string; sessionId: string; expiresAt: number; permissions: PermissionKey[] } {
   const token = existingToken || crypto.randomBytes(32).toString('hex');
-  const expiresAt = Date.now() + SESSION_TTL_MS;
+  const sessionId = crypto.randomBytes(12).toString('hex');
+  const now = Date.now();
+  const expiresAt = now + SESSION_TTL_MS;
   const permissions = user.role === 'designer'
     ? ALL_PERMISSIONS.map(p => p.key)
     : (user.permissions || ROLE_TEMPLATES[user.role] || ROLE_TEMPLATES.employee);
+  const { deviceName, deviceId } = describeDeviceFromRequest(req);
 
+  revokedSessions.delete(token);
   activeSessions.set(token, {
+    sessionId,
     userId: user.id,
     username: user.username,
     phone: user.phone,
@@ -264,23 +462,41 @@ function createSession(user: UserAccount, existingToken?: string): { token: stri
     permissions,
     isOwner: user.role === 'designer' || Boolean(user.isOwner),
     mustChangePassword: Boolean(user.mustChangePassword),
+    deviceName,
+    deviceId,
+    createdAt: now,
+    lastActivityAt: now,
     expiresAt
   });
-  return { token, expiresAt, permissions };
+  return { token, sessionId, expiresAt, permissions };
 }
 
 // وسيط التحقق من المصادقة وانتهاء الجلسة
 export interface AuthenticatedRequest extends Request {
   userSession?: SessionData;
   authToken?: string;
+  authRevoked?: RevokedSessionData;
 }
 
 const MUST_CHANGE_PASSWORD_ALLOWED_PATHS = new Set<string>([
   '/api/auth/complete-initial-setup',
   '/api/auth/logout',
   '/api/auth/me',
+  '/api/auth/activity',
   '/api/public/contact-settings',
   '/api/health'
+]);
+
+const PUBLIC_OR_AUTH_BOOTSTRAP_PATHS = new Set<string>([
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/setup-designer-local',
+  '/api/auth/setup-status',
+  '/api/public/contact-settings',
+  '/api/config',
+  '/api/health',
+  '/api/database/public-status',
+  '/api/visitor-display'
 ]);
 
 function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -294,18 +510,68 @@ function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunc
   const token = authHeader.slice(7).trim();
   req.authToken = token;
   const session = activeSessions.get(token);
+  const cleanPath = req.path.replace(/\/+$/, '') || '/';
 
   if (!session) {
     req.userSession = undefined;
+    const revoked = revokedSessions.get(token);
+    if (revoked) {
+      if ( Date.now() > revoked.expiresAt) {
+        revokedSessions.delete(token);
+      } else {
+        req.authRevoked = revoked;
+        if (!PUBLIC_OR_AUTH_BOOTSTRAP_PATHS.has(cleanPath)) {
+          res.status(401).json({
+            success: false,
+            error: revoked.message,
+            expired: true,
+            code: revoked.reason
+          });
+          return;
+        }
+      }
+    }
     return next();
   }
 
-  if (Date.now() > session.expiresAt) {
+  const now = Date.now();
+  if (now > session.expiresAt) {
     activeSessions.delete(token);
+    if (PUBLIC_OR_AUTH_BOOTSTRAP_PATHS.has(cleanPath)) {
+      req.userSession = undefined;
+      return next();
+    }
     res.status(401).json({
       success: false,
       error: 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجددًا',
       expired: true
+    });
+    return;
+  }
+
+  // التحقق من مهلة عدم النشاط لجميع الجلسات الحالية والجديدة
+  const idleLimitMs = getInactivityTimeoutMs();
+  const lastActive = session.lastActivityAt || session.createdAt || (session.expiresAt - SESSION_TTL_MS);
+  if (now - lastActive > idleLimitMs) {
+    activeSessions.delete(token);
+    const message = 'انتهت الجلسة بسبب عدم النشاط، يرجى تسجيل الدخول مجددًا';
+    const revokedInfo: RevokedSessionData = {
+      reason: 'INACTIVITY_TIMEOUT',
+      message,
+      revokedAt: now,
+      expiresAt: session.expiresAt
+    };
+    revokedSessions.set(token, revokedInfo);
+    req.authRevoked = revokedInfo;
+    if (PUBLIC_OR_AUTH_BOOTSTRAP_PATHS.has(cleanPath)) {
+      req.userSession = undefined;
+      return next();
+    }
+    res.status(401).json({
+      success: false,
+      error: message,
+      expired: true,
+      code: 'INACTIVITY_TIMEOUT'
     });
     return;
   }
@@ -321,9 +587,16 @@ function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunc
           return next();
         }
         activeSessions.delete(token);
+        const suspendedMsg = 'تم إيقاف حسابك من قِبل إدارة النظام، يرجى مراجعة المسؤول';
+        revokedSessions.set(token, {
+          reason: 'USER_SUSPENDED',
+          message: suspendedMsg,
+          revokedAt: now,
+          expiresAt: session.expiresAt
+        });
         res.status(401).json({
           success: false,
-          error: 'تم إيقاف حسابك من قِبل إدارة النظام، يرجى مراجعة المسؤول',
+          error: suspendedMsg,
           expired: true,
           suspended: true
         });
@@ -333,9 +606,34 @@ function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunc
     }
   }
 
+  // تحديث آخر نشاط فقط عند تفاعل المستخدم الفعلي (تجاهل طلبات الخلفية والفحص الدوري)
+  const isBackgroundPoll =
+    req.headers['x-background-poll'] === '1' ||
+    req.headers['x-user-activity'] === '0' ||
+    cleanPath === '/api/health' ||
+    cleanPath === '/api/cart-journal/events';
+
+  if (!isBackgroundPoll) {
+    const isExplicitUserActivity =
+      req.headers['x-user-activity'] === '1' ||
+      cleanPath === '/api/auth/activity' ||
+      (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS');
+    if (isExplicitUserActivity) {
+      session.lastActivityAt = now;
+    }
+  }
+
+  const headerDevName = decodeHeaderValue(req.headers['x-device-name'], 120);
+  if (headerDevName) {
+    session.deviceName = headerDevName;
+  }
+  const headerDevId = decodeHeaderValue(req.headers['x-device-id'], 80);
+  if (headerDevId) {
+    session.deviceId = headerDevId;
+  }
+
   // فرض استكمال إعداد الحساب عند أول دخول في الخادم: رفض أي طلب API آخر برسالة عربية واضحة
   if (session.mustChangePassword && req.path.startsWith('/api/')) {
-    const cleanPath = req.path.replace(/\/+$/, '') || '/';
     if (!MUST_CHANGE_PASSWORD_ALLOWED_PATHS.has(cleanPath)) {
       res.status(403).json({
         success: false,
@@ -353,10 +651,12 @@ function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunc
 
 function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   if (!req.userSession) {
+    const revoked = req.authRevoked;
     res.status(401).json({
       success: false,
-      error: 'يرجى تسجيل الدخول للمتابعة',
-      expired: true
+      error: revoked?.message || 'يرجى تسجيل الدخول للمتابعة',
+      expired: true,
+      ...(revoked?.reason ? { code: revoked.reason } : {})
     });
     return;
   }
@@ -681,7 +981,7 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
     persistence = new StatePersistence({
       transport: persistenceTransport,
       tenant: persistenceTenant,
-      collections: [...dataCollections, getBackupMetaCollection(), getResetMetaCollection(), ...linkedAccounts.collections(), ...manualBalances.collections(), salesRulesCollection, visitorSettingsCollection, labelSettingsCollection, invoiceNumberingCollection, ...deliveryCollections],
+      collections: [...dataCollections, getBackupMetaCollection(), getResetMetaCollection(), getAuthSessionsCollection(), ...linkedAccounts.collections(), ...manualBalances.collections(), salesRulesCollection, visitorSettingsCollection, labelSettingsCollection, invoiceNumberingCollection, ...deliveryCollections],
       onEmpty: () => applyCleanInitialState()
     });
     await persistence.start();
@@ -1757,6 +2057,7 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
     const displaySettings = getDisplaySettings();
     res.json({
       ...latestConf,
+      inactivityTimeoutMinutes: normalizeInactivityTimeoutMinutes(companySettings.inactivityTimeoutMinutes),
       dataEpoch: getResetMeta().lastResetAt,
       persistenceMode: persistence ? 'supabase' : 'none',
       hasOwner,
@@ -1849,11 +2150,12 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
       if (result.success) {
         const loginRes = await loginUser(username, password);
         if (loginRes.success && loginRes.user) {
-          const session = createSession(loginRes.user, loginRes.token);
+          const session = createSession(loginRes.user, loginRes.token, req);
           res.json({
             success: true,
             message: 'تم إنشاء أول حساب مصمم للنظام بنجاح',
             token: session.token,
+            sessionId: session.sessionId,
             expiresAt: session.expiresAt,
             user: loginRes.user
           });
@@ -1879,10 +2181,11 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
 
       const result = await loginUser(userIdentifier, password);
       if (result.success && result.user) {
-        const session = createSession(result.user, result.token);
+        const session = createSession(result.user, result.token, req);
         res.json({
           success: true,
           token: session.token,
+          sessionId: session.sessionId,
           expiresAt: session.expiresAt,
           user: {
             ...result.user,
@@ -1904,6 +2207,7 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
       const token = req.authToken;
       if (token) {
         activeSessions.delete(token);
+        revokedSessions.delete(token);
       }
       await logoutUserSession(token);
       res.json({ success: true, message: 'تم إنهاء الجلسة بنجاح' });
@@ -1912,9 +2216,26 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
     }
   });
 
+  // تحديث وقت آخر نشاط فعلي للمستخدم (لا يُستدعى من طلبات الفحص الخلفية)
+  app.post('/api/auth/activity', requireAuth as any, (req: AuthenticatedRequest, res: Response) => {
+    const session = req.userSession!;
+    const now = Date.now();
+    session.lastActivityAt = now;
+    const { deviceName, deviceId } = describeDeviceFromRequest(req);
+    if (deviceName) session.deviceName = deviceName;
+    if (deviceId) session.deviceId = deviceId;
+    const inactivityTimeoutMinutes = normalizeInactivityTimeoutMinutes(getCompanySettings().inactivityTimeoutMinutes);
+    res.json({
+      success: true,
+      lastActivityAt: new Date(now).toISOString(),
+      inactivityTimeoutMinutes
+    });
+  });
+
   // فحص صحة الجلسة الحالية
   app.get('/api/auth/me', requireAuth as any, (req: AuthenticatedRequest, res: Response) => {
     const session = req.userSession!;
+    const inactivityTimeoutMinutes = normalizeInactivityTimeoutMinutes(getCompanySettings().inactivityTimeoutMinutes);
     res.json({
       success: true,
       user: {
@@ -1927,6 +2248,9 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
         isOwner: session.isOwner,
         mustChangePassword: Boolean(session.mustChangePassword)
       },
+      sessionId: session.sessionId,
+      lastActivityAt: new Date(session.lastActivityAt || session.createdAt).toISOString(),
+      inactivityTimeoutMinutes,
       expiresAt: session.expiresAt
     });
   });
@@ -3370,6 +3694,194 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
       });
     } catch (err: any) {
       handleCatchError(res, err);
+    }
+  });
+
+  // عرض الجلسات النشطة للمستخدمين (من دون إرجاع رمز الجلسة أو أي سر)
+  app.get('/api/users/sessions', requireAuth as any, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const caller = req.userSession!;
+      const canViewSessions =
+        caller.role === 'designer' ||
+        caller.isOwner ||
+        caller.permissions.includes('users.view') ||
+        caller.permissions.includes('users.edit') ||
+        caller.permissions.includes('users.status');
+      if (!canViewSessions) {
+        res.status(403).json({ success: false, error: 'غير مصرح: تفتقر لصلاحية عرض جلسات المستخدمين' });
+        return;
+      }
+
+      pruneExpiredSessions();
+      const sessions: ActiveUserSessionInfo[] = [];
+      for (const [token, sess] of activeSessions.entries()) {
+        const createdMs = sess.createdAt || (sess.expiresAt - SESSION_TTL_MS);
+        const lastActiveMs = sess.lastActivityAt || createdMs;
+        sessions.push({
+          sessionId: sess.sessionId,
+          userId: sess.userId,
+          username: sess.username,
+          name: sess.name,
+          role: sess.role,
+          deviceName: sess.deviceName || 'متصفح ويب',
+          deviceId: sess.deviceId,
+          createdAt: new Date(createdMs).toISOString(),
+          lastActivityAt: new Date(lastActiveMs).toISOString(),
+          expiresAt: new Date(sess.expiresAt).toISOString(),
+          isCurrentSession: token === req.authToken
+        });
+      }
+
+      sessions.sort((a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime());
+
+      res.json({
+        success: true,
+        sessions,
+        inactivityTimeoutMinutes: normalizeInactivityTimeoutMinutes(getCompanySettings().inactivityTimeoutMinutes)
+      });
+    } catch (err: any) {
+      handleCatchError(res, err, 'تعذر جلب جلسات المستخدمين');
+    }
+  });
+
+  // إنهاء جلسة محددة لمستخدم
+  app.delete('/api/users/:id/sessions/:sessionId', requireAuth as any, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const caller = req.userSession!;
+      const canTerminate =
+        caller.role === 'designer' ||
+        caller.isOwner ||
+        caller.permissions.includes('users.edit') ||
+        caller.permissions.includes('users.status');
+      if (!canTerminate) {
+        res.status(403).json({ success: false, error: 'غير مصرح: تفتقر لصلاحية إنهاء جلسات المستخدمين' });
+        return;
+      }
+
+      pruneExpiredSessions();
+      const targetUserId = String(req.params.id || '').trim();
+      const targetSessionId = String(req.params.sessionId || '').trim();
+
+      let matchedToken: string | null = null;
+      let matchedSession: SessionData | null = null;
+      for (const [token, sess] of activeSessions.entries()) {
+        if (sess.userId === targetUserId && sess.sessionId === targetSessionId) {
+          matchedToken = token;
+          matchedSession = sess;
+          break;
+        }
+      }
+
+      if (!matchedToken || !matchedSession) {
+        res.status(404).json({ success: false, error: 'الجلسة المطلوبة غير موجودة أو انتهت بالفعل' });
+        return;
+      }
+
+      const targetIsOwner = matchedSession.role === 'designer' || Boolean(matchedSession.isOwner);
+      const callerIsOwner = caller.role === 'designer' || Boolean(caller.isOwner);
+      if (targetIsOwner && !callerIsOwner) {
+        res.status(403).json({ success: false, error: 'غير مصرح: لا يمكن لغير المالك إنهاء جلسات مالك النظام' });
+        return;
+      }
+
+      activeSessions.delete(matchedToken);
+      revokedSessions.set(matchedToken, {
+        reason: 'TERMINATED_BY_ADMIN',
+        message: 'تم إنهاء الجلسة من قِبل إدارة النظام، يرجى تسجيل الدخول مجددًا',
+        revokedAt: Date.now(),
+        expiresAt: matchedSession.expiresAt
+      });
+
+      recordAuditLog(
+        { id: caller.userId, name: caller.name, role: caller.role, phone: caller.phone },
+        'USER_SESSION_TERMINATED',
+        'Session',
+        matchedSession.userId,
+        `إنهاء جلسة للمستخدم ${matchedSession.name} (@${matchedSession.username}) — الجهاز: ${matchedSession.deviceName || 'متصفح ويب'}`
+      );
+
+      res.json({
+        success: true,
+        terminatedCount: 1,
+        terminatedCurrentSession: matchedToken === req.authToken,
+        message: `تم إنهاء جلسة المستخدم «${matchedSession.name}» بنجاح`
+      });
+    } catch (err: any) {
+      handleCatchError(res, err, 'تعذر إنهاء الجلسة');
+    }
+  });
+
+  // إنهاء جميع الجلسات النشطة لمستخدم
+  app.delete('/api/users/:id/sessions', requireAuth as any, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const caller = req.userSession!;
+      const canTerminate =
+        caller.role === 'designer' ||
+        caller.isOwner ||
+        caller.permissions.includes('users.edit') ||
+        caller.permissions.includes('users.status');
+      if (!canTerminate) {
+        res.status(403).json({ success: false, error: 'غير مصرح: تفتقر لصلاحية إنهاء جلسات المستخدمين' });
+        return;
+      }
+
+      pruneExpiredSessions();
+      const targetUserId = String(req.params.id || '').trim();
+      const storedTarget = getStoredUserById(targetUserId);
+
+      const matchingEntries: Array<[string, SessionData]> = [];
+      for (const [token, sess] of activeSessions.entries()) {
+        if (sess.userId === targetUserId) {
+          matchingEntries.push([token, sess]);
+        }
+      }
+
+      const targetIsOwner =
+        storedTarget?.role === 'designer' ||
+        Boolean(storedTarget?.isOwner) ||
+        matchingEntries.some(([, s]) => s.role === 'designer' || Boolean(s.isOwner));
+      const callerIsOwner = caller.role === 'designer' || Boolean(caller.isOwner);
+      if (targetIsOwner && !callerIsOwner) {
+        res.status(403).json({ success: false, error: 'غير مصرح: لا يمكن لغير المالك إنهاء جلسات مالك النظام' });
+        return;
+      }
+
+      let terminatedCurrentSession = false;
+      const now = Date.now();
+      for (const [token, sess] of matchingEntries) {
+        activeSessions.delete(token);
+        revokedSessions.set(token, {
+          reason: 'TERMINATED_BY_ADMIN',
+          message: 'تم إنهاء الجلسة من قِبل إدارة النظام، يرجى تسجيل الدخول مجددًا',
+          revokedAt: now,
+          expiresAt: sess.expiresAt
+        });
+        if (token === req.authToken) {
+          terminatedCurrentSession = true;
+        }
+      }
+
+      const targetName = storedTarget?.name || matchingEntries[0]?.[1]?.name || targetUserId;
+      const targetUsername = storedTarget?.username || matchingEntries[0]?.[1]?.username || '';
+
+      recordAuditLog(
+        { id: caller.userId, name: caller.name, role: caller.role, phone: caller.phone },
+        'USER_ALL_SESSIONS_TERMINATED',
+        'Session',
+        targetUserId,
+        `إنهاء جميع الجلسات النشطة (${matchingEntries.length}) للمستخدم ${targetName}${targetUsername ? ` (@${targetUsername})` : ''}`
+      );
+
+      res.json({
+        success: true,
+        terminatedCount: matchingEntries.length,
+        terminatedCurrentSession,
+        message: matchingEntries.length > 0
+          ? `تم إنهاء جميع الجلسات النشطة (${matchingEntries.length}) للمستخدم «${targetName}»`
+          : `لا توجد جلسات نشطة حاليًا للمستخدم «${targetName}»`
+      });
+    } catch (err: any) {
+      handleCatchError(res, err, 'تعذر إنهاء جلسات المستخدم');
     }
   });
 

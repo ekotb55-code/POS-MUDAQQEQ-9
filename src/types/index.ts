@@ -225,6 +225,48 @@ export interface AuthSession {
   offline?: boolean;
 }
 
+export type InactivityTimeoutMinutes = 15 | 30 | 60 | 120 | 240 | 480 | 720 | 1440;
+
+export const INACTIVITY_TIMEOUT_OPTIONS_MINUTES: readonly InactivityTimeoutMinutes[] = [
+  15,
+  30,
+  60,
+  120,
+  240,
+  480,
+  720,
+  1440
+];
+
+export const DEFAULT_INACTIVITY_TIMEOUT_MINUTES: InactivityTimeoutMinutes = 480;
+
+export function isValidInactivityTimeoutMinutes(value: unknown): value is InactivityTimeoutMinutes {
+  const num = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof num === 'number' && Number.isFinite(num) && (INACTIVITY_TIMEOUT_OPTIONS_MINUTES as readonly number[]).includes(num);
+}
+
+export function normalizeInactivityTimeoutMinutes(value: unknown): InactivityTimeoutMinutes {
+  const num = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  if (typeof num === 'number' && Number.isFinite(num) && (INACTIVITY_TIMEOUT_OPTIONS_MINUTES as readonly number[]).includes(num)) {
+    return num as InactivityTimeoutMinutes;
+  }
+  return DEFAULT_INACTIVITY_TIMEOUT_MINUTES;
+}
+
+export interface ActiveUserSessionInfo {
+  sessionId: string;
+  userId: string;
+  username: string;
+  name: string;
+  role: UserRole;
+  deviceName: string;
+  deviceId?: string;
+  createdAt: string;
+  lastActivityAt: string;
+  expiresAt: string;
+  isCurrentSession?: boolean;
+}
+
 export type AppTheme = 'light-sky' | 'dark' | 'current' | 'aurora' | 'aurora-sky';
 export const VALID_APP_THEMES: readonly AppTheme[] = [
   'light-sky',
@@ -296,6 +338,7 @@ export interface CompanySettings {
   salesWhatsapp?: string;
   salesPhone?: string;
   keyboardShortcuts?: KeyboardShortcutsSettings;
+  inactivityTimeoutMinutes?: InactivityTimeoutMinutes;
 }
 
 // 2. إعدادات الفواتير والطباعة
@@ -768,6 +811,7 @@ export interface SystemConfig {
   taxSettings?: TaxSettings;
   stockSettings?: StockSettings;
   enableDeliveryFee?: boolean;
+  inactivityTimeoutMinutes?: InactivityTimeoutMinutes;
   lastSyncTime?: string;
   dataEpoch?: string;
 }

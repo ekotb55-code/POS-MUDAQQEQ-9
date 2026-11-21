@@ -31,6 +31,7 @@ export interface SystemConfig {
   lastSyncTime?: string;
   taxSettings?: TaxSettings;
   enableDeliveryFee?: boolean;
+  inactivityTimeoutMinutes?: number;
 }
 
 /**
@@ -91,7 +92,8 @@ const systemConfig: SystemConfig = {
   hasOwner: false,
   hasManager: false,
   taxSettings: defaultTaxSettings,
-  enableDeliveryFee: false
+  enableDeliveryFee: false,
+  inactivityTimeoutMinutes: 480
 };
 
 /**
@@ -194,7 +196,8 @@ export function exportPersistedConfig() {
     hasOwner: Boolean(systemConfig.hasOwner),
     hasManager: Boolean(systemConfig.hasManager),
     taxSettings: { ...defaultTaxSettings, ...(systemConfig.taxSettings || {}) },
-    enableDeliveryFee: Boolean(systemConfig.enableDeliveryFee)
+    enableDeliveryFee: Boolean(systemConfig.enableDeliveryFee),
+    inactivityTimeoutMinutes: typeof systemConfig.inactivityTimeoutMinutes === 'number' ? systemConfig.inactivityTimeoutMinutes : 480
   };
 }
 
@@ -208,4 +211,5 @@ export function importPersistedConfig(value: any): void {
     systemConfig.taxSettings = { ...defaultTaxSettings, ...value.taxSettings };
   }
   if (typeof value.enableDeliveryFee === 'boolean') systemConfig.enableDeliveryFee = value.enableDeliveryFee;
+  if (typeof value.inactivityTimeoutMinutes === 'number') systemConfig.inactivityTimeoutMinutes = value.inactivityTimeoutMinutes;
 }
