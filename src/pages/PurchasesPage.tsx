@@ -11,7 +11,8 @@ import {
   Item,
   PageType,
   UserAccount,
-  UserRole
+  UserRole,
+  BarcodeScanQuantityMode
 } from '../types';
 import { api } from '../api/client';
 import { hasPermission } from '../utils/permissions';
@@ -48,6 +49,7 @@ interface PurchasesPageProps {
   items: Item[];
   user: UserAccount | null;
   userRole: UserRole;
+  barcodeScanMode?: BarcodeScanQuantityMode;
   onRefreshItems?: () => void;
   initialTab?: TabType;
   onNavigate?: (page: PageType, tab?: string) => void;
@@ -68,6 +70,7 @@ export const PurchasesPage: React.FC<PurchasesPageProps> = ({
   items,
   user,
   userRole,
+  barcodeScanMode,
   onRefreshItems,
   initialTab,
   onNavigate,
@@ -393,6 +396,7 @@ export const PurchasesPage: React.FC<PurchasesPageProps> = ({
           suppliers={suppliers}
           cashboxes={cashboxes}
           user={user}
+          barcodeScanMode={barcodeScanMode}
           onBack={() => setViewMode('list')}
           onSuccess={() => {
             setViewMode('list');
@@ -430,6 +434,7 @@ export const PurchasesPage: React.FC<PurchasesPageProps> = ({
         cashboxes={cashboxes}
         items={items}
         user={user}
+        barcodeScanMode={barcodeScanMode}
         onBack={() => setViewMode('list')}
         onSuccess={() => {
           setViewMode('list');

@@ -841,7 +841,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     enableInlineEdit: false,
     ...(cfg.displaySettings || {}),
     autoFillCashPaid: cfg.displaySettings?.autoFillCashPaid ?? cfg.invoicePrintSettings?.autoFillCashPaid ?? true,
-    posVisibleCategoryIds: normalizeCatIdList(cfg.displaySettings?.posVisibleCategoryIds)
+    posVisibleCategoryIds: normalizeCatIdList(cfg.displaySettings?.posVisibleCategoryIds),
+    barcodeScanMode: cfg.displaySettings?.barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment'
   });
 
   const buildInitialTax = (cfg: SystemConfig): TaxSettings => ({
@@ -1264,7 +1265,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     const salesDisplayDirty =
       Boolean(displaySettings.confirmInvoiceBeforeSave) !== Boolean(committedDisplay.confirmInvoiceBeforeSave) ||
       (displaySettings.autoFillCashPaid ?? true) !== (committedDisplay.autoFillCashPaid ?? true) ||
-      !areCategoryIdListsEqual(displaySettings.posVisibleCategoryIds, committedDisplay.posVisibleCategoryIds);
+      !areCategoryIdListsEqual(displaySettings.posVisibleCategoryIds, committedDisplay.posVisibleCategoryIds) ||
+      (displaySettings.barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment') !==
+        (committedDisplay.barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment');
 
     const deliveryFeeDirty =
       Boolean(companySettings.enableDeliveryFee) !== Boolean(committedCompany.enableDeliveryFee);
@@ -1655,12 +1658,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         if (pageDiffs.salesDisplayDirty) {
           const autoFillVal = displaySettings.autoFillCashPaid ?? true;
           const nextPosVisibleCategoryIds = normalizeCatIdList(displaySettings.posVisibleCategoryIds);
+          const nextBarcodeScanMode =
+            displaySettings.barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment';
           if (canManageDisplay || !canManagePrint) {
             const dispPayload: DisplaySettings = {
               ...runningDisplay,
               confirmInvoiceBeforeSave: displaySettings.confirmInvoiceBeforeSave,
               autoFillCashPaid: autoFillVal,
-              ...(canManageDisplay ? { posVisibleCategoryIds: nextPosVisibleCategoryIds } : {})
+              ...(canManageDisplay
+                ? {
+                    posVisibleCategoryIds: nextPosVisibleCategoryIds,
+                    barcodeScanMode: nextBarcodeScanMode
+                  }
+                : {})
             };
             const dispRes = await api.saveDisplaySettings(dispPayload);
             if (dispRes && dispRes.success === false) {
@@ -3943,6 +3953,57 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       </button>
                     </div>
                   )}
+              </div>
+            </div>
+          )}
+
+          {canManageDisplay && (
+            <div className="space-y-4">
+              <SectionHeading
+                title="إعدادات الباركود"
+                withTopDivider={canManageSalesRules || canManageDisplay || canManagePrint || canManageCompany}
+              />
+              <div>
+                {renderSettingRow(
+                  'طريقة إضافة الكمية عند مسح الباركود',
+                  'يُطبق هذا الإعداد تلقائيًا على جميع شاشات المعاملات (نقطة البيع، فاتورة المشتريات، مرتجع المبيعات، مرتجع المشتريات، والتحويل بين المخازن) لقارئ الباركود USB/Bluetooth والكاميرا.',
+                  <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="طريقة إضافة الكمية عند مسح الباركود">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDisplaySettings({
+                          ...displaySettings,
+                          barcodeScanMode: 'edit_quantity'
+                        })
+                      }
+                      aria-pressed={displaySettings.barcodeScanMode === 'edit_quantity'}
+                      className={`min-h-[40px] px-3.5 py-2 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                        displaySettings.barcodeScanMode === 'edit_quantity'
+                          ? 'bg-[#1668B2] border-[#1668B2] text-white'
+                          : 'border-[var(--border-color)] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]'
+                      }`}
+                    >
+                      مسح الصنف ثم تعديل الكمية
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDisplaySettings({
+                          ...displaySettings,
+                          barcodeScanMode: 'increment'
+                        })
+                      }
+                      aria-pressed={(displaySettings.barcodeScanMode || 'increment') === 'increment'}
+                      className={`min-h-[40px] px-3.5 py-2 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                        (displaySettings.barcodeScanMode || 'increment') === 'increment'
+                          ? 'bg-[#1668B2] border-[#1668B2] text-white'
+                          : 'border-[var(--border-color)] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]'
+                      }`}
+                    >
+                      كل مسحة تضيف قطعة
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}

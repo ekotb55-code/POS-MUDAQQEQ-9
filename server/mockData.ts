@@ -230,7 +230,8 @@ export const defaultDisplaySettings: DisplaySettings = {
   confirmInvoiceBeforeSave: true,
   autoFillCashPaid: true,
   enableInlineEdit: false,
-  posVisibleCategoryIds: []
+  posVisibleCategoryIds: [],
+  barcodeScanMode: 'increment'
 };
 
 export const MAIN_WAREHOUSE_ID = 'wh-main-001';

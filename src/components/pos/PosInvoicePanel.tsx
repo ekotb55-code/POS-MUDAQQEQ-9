@@ -39,7 +39,6 @@ import {
   useModalShortcuts,
   ShortcutBadge
 } from '../../context/KeyboardShortcutsContext';
-import { BarcodeScanModeSelect } from '../BarcodeScanModeSelect';
 
 export type PosSaleMode = 'platform' | 'customer';
 
@@ -1371,8 +1370,6 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
               <Camera className="w-4 h-4 text-cyan-200" />
             </button>
           </div>
-
-          <BarcodeScanModeSelect compact showLabel={true} />
 
           {scanFeedback && (
             <div

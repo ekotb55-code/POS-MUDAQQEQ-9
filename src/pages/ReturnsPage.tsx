@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { ReturnRecord, Invoice, Item, Cashbox, UserAccount } from '../types';
+import { ReturnRecord, Invoice, Item, Cashbox, UserAccount, BarcodeScanQuantityMode } from '../types';
 import { api } from '../api/client';
 import { generateIdempotencyKey } from '../utils/idempotency';
 import { DateRangeFilter } from '../components/DateRangeFilter';
@@ -34,6 +34,7 @@ interface ReturnsPageProps {
   invoices: Invoice[];
   items: Item[];
   user?: UserAccount | null;
+  barcodeScanMode?: BarcodeScanQuantityMode;
   onCreateReturn: (returnData: any) => Promise<void>;
   preselectedInvoice?: Invoice | null;
   onClearPreselectedInvoice?: () => void;
@@ -44,6 +45,7 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({
   invoices,
   items,
   user = null,
+  barcodeScanMode,
   onCreateReturn,
   preselectedInvoice,
   onClearPreselectedInvoice
@@ -311,6 +313,7 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({
         items={items}
         cashboxes={cashboxes}
         user={user}
+        barcodeScanMode={barcodeScanMode}
         preselectedInvoice={preselectedInvoice}
         onBack={() => {
           setIsCreateMode(false);

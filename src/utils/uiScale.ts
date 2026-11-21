@@ -19,7 +19,6 @@
 
 export type PosPanelWidth = 'narrow' | 'medium' | 'wide';
 export type PosSize = 'small' | 'medium' | 'large';
-export type BarcodeScanQuantityMode = 'increment' | 'edit_quantity';
 
 export interface UiPrefs {
   /** حجم الواجهة لكل البرنامج (1 = الحجم الأصلي) */
@@ -31,8 +30,6 @@ export interface UiPrefs {
   posCategorySize: PosSize;
   /** بدون إطارات: لوحة الفاتورة وشبكة الأصناف على سطح واحد بدون حدود أو ظلال */
   posFrameless: boolean;
-  /** طريقة إضافة الكمية عند مسح الباركود في شاشات معاملات المخزون */
-  barcodeScanMode: BarcodeScanQuantityMode;
 }
 
 export const UI_PREFS_STORAGE_KEY = 'mudaqqeq_ui_prefs_v1';
@@ -60,10 +57,6 @@ export const POS_CATEGORY_SIZES: Readonly<Record<PosSize, { height: number; font
 
 export const POS_PANEL_WIDTH_LABELS: Readonly<Record<PosPanelWidth, string>> = { narrow: 'ضيقة', medium: 'وسط', wide: 'عريضة' };
 export const POS_SIZE_LABELS: Readonly<Record<PosSize, string>> = { small: 'صغير', medium: 'وسط', large: 'كبير' };
-export const BARCODE_SCAN_MODE_LABELS: Readonly<Record<BarcodeScanQuantityMode, string>> = {
-  edit_quantity: 'مسح الصنف ثم تعديل الكمية',
-  increment: 'كل مسحة تضيف قطعة'
-};
 
 export const DEFAULT_UI_PREFS: Readonly<UiPrefs> = Object.freeze({
   appScale: 1,
@@ -71,8 +64,7 @@ export const DEFAULT_UI_PREFS: Readonly<UiPrefs> = Object.freeze({
   posPanelWidth: 'medium',
   posCardSize: 'medium',
   posCategorySize: 'medium',
-  posFrameless: true,
-  barcodeScanMode: 'increment'
+  posFrameless: true
 });
 
 const oneOf = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T => (allowed.includes(value as T) ? (value as T) : fallback);
@@ -94,8 +86,7 @@ export function normalizeUiPrefs(value: unknown): UiPrefs {
     posPanelWidth: oneOf(source.posPanelWidth, ['narrow', 'medium', 'wide'] as const, DEFAULT_UI_PREFS.posPanelWidth),
     posCardSize: oneOf(source.posCardSize, ['small', 'medium', 'large'] as const, DEFAULT_UI_PREFS.posCardSize),
     posCategorySize: oneOf(source.posCategorySize, ['small', 'medium', 'large'] as const, DEFAULT_UI_PREFS.posCategorySize),
-    posFrameless: typeof source.posFrameless === 'boolean' ? source.posFrameless : DEFAULT_UI_PREFS.posFrameless,
-    barcodeScanMode: oneOf(source.barcodeScanMode, ['increment', 'edit_quantity'] as const, DEFAULT_UI_PREFS.barcodeScanMode)
+    posFrameless: typeof source.posFrameless === 'boolean' ? source.posFrameless : DEFAULT_UI_PREFS.posFrameless
   };
 }
 

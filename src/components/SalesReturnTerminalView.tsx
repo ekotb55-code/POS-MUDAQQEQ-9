@@ -4,11 +4,10 @@ import {
   Invoice,
   Item,
   Cashbox,
-  UserAccount
+  UserAccount,
+  BarcodeScanQuantityMode
 } from '../types';
 import { CameraBarcodeScannerModal } from './CameraBarcodeScannerModal';
-import { BarcodeScanModeSelect } from './BarcodeScanModeSelect';
-import { readUiPrefs } from '../utils/uiScale';
 import { generateIdempotencyKey } from '../utils/idempotency';
 import { useUserWarehouses } from '../hooks/useUserWarehouses';
 import {
@@ -70,6 +69,7 @@ interface SalesReturnTerminalViewProps {
   items: Item[];
   cashboxes: Cashbox[];
   user?: UserAccount | null;
+  barcodeScanMode?: BarcodeScanQuantityMode;
   preselectedInvoice?: Invoice | null;
   onBack: () => void;
   onSubmitReturn: (returnData: any) => Promise<void>;
@@ -81,6 +81,7 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
   items,
   cashboxes,
   user = null,
+  barcodeScanMode,
   preselectedInvoice,
   onBack,
   onSubmitReturn
@@ -284,7 +285,8 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
 
       if (lineIdx >= 0) {
         const line = returnLinesState[lineIdx];
-        const scanMode = readUiPrefs().barcodeScanMode;
+        const scanMode: BarcodeScanQuantityMode =
+          barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment';
 
         // في وضع «مسح الصنف ثم تعديل الكمية»: إذا كان الصنف قد أُضيف للمرتجع بالفعل (كميته > 0)، نحدد سطره لتعديل الكمية يدويًا دون زيادة تلقائية
         if (line.returnedQuantity > 0 && scanMode === 'edit_quantity') {
@@ -519,8 +521,6 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
             بحث / إضافة
           </button>
         </form>
-
-        <BarcodeScanModeSelect />
 
         <div>
           <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">

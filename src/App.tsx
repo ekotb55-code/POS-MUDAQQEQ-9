@@ -2389,6 +2389,7 @@ export default function App() {
                 user={user}
                 items={items}
                 allowNegativeWarehouseTransfer={Boolean(config.stockSettings?.allowNegativeWarehouseTransfer)}
+                barcodeScanMode={config.displaySettings?.barcodeScanMode}
                 onRefreshData={loadData}
                 onNavigateToDispatchOrders={() => handleNavigate('warehouse_dispatch_orders')}
               />
@@ -2434,6 +2435,7 @@ export default function App() {
               items={items}
               user={user}
               userRole={role}
+              barcodeScanMode={config.displaySettings?.barcodeScanMode}
               onRefreshItems={loadData}
               initialTab={currentTab as any}
               onNavigate={handleNavigate}
@@ -2511,6 +2513,7 @@ export default function App() {
               invoices={invoices}
               items={items}
               user={user}
+              barcodeScanMode={config.displaySettings?.barcodeScanMode}
               onCreateReturn={handleCreateReturn}
               preselectedInvoice={preselectedInvoiceForReturn}
               onClearPreselectedInvoice={() => setPreselectedInvoiceForReturn(null)}

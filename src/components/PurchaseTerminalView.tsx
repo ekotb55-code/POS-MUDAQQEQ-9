@@ -4,12 +4,11 @@ import {
   Supplier,
   Cashbox,
   UserAccount,
+  BarcodeScanQuantityMode,
 } from '../types';
 import { api } from '../api/client';
 import { useUserWarehouses, fetchAllWarehouseStockMap } from '../hooks/useUserWarehouses';
 import { CameraBarcodeScannerModal } from './CameraBarcodeScannerModal';
-import { BarcodeScanModeSelect } from './BarcodeScanModeSelect';
-import { readUiPrefs } from '../utils/uiScale';
 import { generateIdempotencyKey } from '../utils/idempotency';
 import {
   PageSurface,
@@ -68,6 +67,7 @@ interface PurchaseTerminalViewProps {
   suppliers: Supplier[];
   cashboxes: Cashbox[];
   user?: UserAccount | null;
+  barcodeScanMode?: BarcodeScanQuantityMode;
   onBack: () => void;
   onSuccess: () => void;
   onOpenSupplierModal?: () => void;
@@ -78,6 +78,7 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
   suppliers,
   cashboxes,
   user = null,
+  barcodeScanMode,
   onBack,
   onSuccess,
   onOpenSupplierModal,
@@ -293,7 +294,8 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
 
     if (found) {
       const existingLine = lines.find((l) => l.itemId === found.id);
-      const scanMode = readUiPrefs().barcodeScanMode;
+      const scanMode: BarcodeScanQuantityMode =
+        barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment';
 
       if (existingLine && scanMode === 'edit_quantity') {
         playBeep();
@@ -616,8 +618,6 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
             إضافة
           </button>
         </form>
-
-        <BarcodeScanModeSelect />
 
         <div>
           <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">بحث في الكتالوج</label>

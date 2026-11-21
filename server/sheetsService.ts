@@ -15266,6 +15266,10 @@ function normalizePosVisibleCategoryIds(raw: unknown): string[] {
   return out;
 }
 
+function normalizeBarcodeScanMode(raw: unknown): 'increment' | 'edit_quantity' {
+  return raw === 'edit_quantity' ? 'edit_quantity' : 'increment';
+}
+
 /**
  * قراءة إعدادات عرض الأصناف وشاشة المبيعات
  */
@@ -15275,7 +15279,8 @@ export function getDisplaySettings(): DisplaySettings {
     ...defaultDisplaySettings,
     ...memoryDisplaySettings,
     autoFillCashPaid: autoFill,
-    posVisibleCategoryIds: normalizePosVisibleCategoryIds(memoryDisplaySettings.posVisibleCategoryIds)
+    posVisibleCategoryIds: normalizePosVisibleCategoryIds(memoryDisplaySettings.posVisibleCategoryIds),
+    barcodeScanMode: normalizeBarcodeScanMode(memoryDisplaySettings.barcodeScanMode)
   };
 }
 
@@ -15292,13 +15297,18 @@ export async function saveDisplaySettings(settings: Partial<DisplaySettings>, se
     settings.posVisibleCategoryIds !== undefined
       ? normalizePosVisibleCategoryIds(settings.posVisibleCategoryIds)
       : normalizePosVisibleCategoryIds(memoryDisplaySettings.posVisibleCategoryIds);
+  const nextBarcodeScanMode =
+    settings.barcodeScanMode !== undefined
+      ? normalizeBarcodeScanMode(settings.barcodeScanMode)
+      : normalizeBarcodeScanMode(memoryDisplaySettings.barcodeScanMode);
 
   const nextDisplaySettings: DisplaySettings = {
     ...defaultDisplaySettings,
     ...memoryDisplaySettings,
     ...settings,
     autoFillCashPaid: nextAutoFill,
-    posVisibleCategoryIds: nextPosVisibleCategoryIds
+    posVisibleCategoryIds: nextPosVisibleCategoryIds,
+    barcodeScanMode: nextBarcodeScanMode
   };
   const nextPrintSettings: InvoicePrintSettings = {
     ...defaultInvoicePrintSettings,

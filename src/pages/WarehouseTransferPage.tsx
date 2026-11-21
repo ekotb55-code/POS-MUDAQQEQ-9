@@ -19,14 +19,13 @@ import {
   Item,
   UserAccount,
   Warehouse,
-  WarehouseDispatchOrder
+  WarehouseDispatchOrder,
+  BarcodeScanQuantityMode
 } from '../types';
 import { hasPermission } from '../utils/permissions';
 import { normalizeArabicText, formatMoney } from '../utils/dateUtils';
 import { generateIdempotencyKey } from '../utils/idempotency';
 import { CameraBarcodeScannerModal } from '../components/CameraBarcodeScannerModal';
-import { BarcodeScanModeSelect } from '../components/BarcodeScanModeSelect';
-import { readUiPrefs } from '../utils/uiScale';
 import {
   PageSurface,
   SectionHeading,
@@ -42,6 +41,7 @@ interface WarehouseTransferPageProps {
   user: UserAccount;
   items: Item[];
   allowNegativeWarehouseTransfer?: boolean;
+  barcodeScanMode?: BarcodeScanQuantityMode;
   onRefreshData?: () => void | Promise<void>;
   onNavigateToDispatchOrders?: () => void;
 }
@@ -86,6 +86,7 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
   user,
   items: propItems,
   allowNegativeWarehouseTransfer: propAllowNegative = false,
+  barcodeScanMode,
   onRefreshData,
   onNavigateToDispatchOrders
 }) => {
@@ -397,7 +398,8 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
     }
 
     const existingLine = lines.find(l => l.itemId === matched.id);
-    const scanMode = readUiPrefs().barcodeScanMode;
+    const scanMode: BarcodeScanQuantityMode =
+      barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment';
 
     if (existingLine && scanMode === 'edit_quantity') {
       setSelectedItemId(matched.id);
@@ -799,8 +801,6 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
                     />
                   </div>
                 </div>
-
-                <BarcodeScanModeSelect />
 
                 <div className="relative" ref={searchWrapperRef}>
                   <label

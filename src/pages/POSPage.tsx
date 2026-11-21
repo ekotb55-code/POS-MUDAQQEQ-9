@@ -434,8 +434,7 @@ export const POSPage: React.FC<POSPageProps> = ({
     const current = readUiPrefs();
     const next: UiPrefs = {
       ...DEFAULT_UI_PREFS,
-      appScale: current.appScale,
-      barcodeScanMode: current.barcodeScanMode
+      appScale: current.appScale
     };
     setPosUiPrefs(next);
     applyUiPrefs(next, true, document.documentElement, draftSharedDisplay);
@@ -443,8 +442,7 @@ export const POSPage: React.FC<POSPageProps> = ({
 
   const handleSavePosUiPrefs = async () => {
     const saved = writeUiPrefs({
-      ...posUiPrefs,
-      barcodeScanMode: readUiPrefs().barcodeScanMode
+      ...posUiPrefs
     });
     setPosUiPrefs(saved);
     applyUiPrefs(saved, true, document.documentElement, draftSharedDisplay);
@@ -2015,7 +2013,8 @@ export const POSPage: React.FC<POSPageProps> = ({
 
       const currentCart = cartRef.current;
       const existingInCart = currentCart.find(c => c.item.id === foundItem.id);
-      const scanMode = readUiPrefs().barcodeScanMode;
+      const scanMode =
+        displaySettings?.barcodeScanMode === 'edit_quantity' ? 'edit_quantity' : 'increment';
 
       // في وضع «مسح الصنف ثم تعديل الكمية»: إذا كان الصنف موجودًا في السلة، ننقل سطره إلى أول صف ونحدده لتعديل الكمية يدويًا دون زيادة تلقائية أو إنشاء سطر مكرر
       if (existingInCart && scanMode === 'edit_quantity') {
@@ -2151,15 +2150,18 @@ export const POSPage: React.FC<POSPageProps> = ({
     deliveryAssigneeId
   };
 
-  // التقاط مسح قارئ الباركود (USB / Bluetooth) من أي موضع داخل شاشة نقطة البيع النشطة دون تلويث حقول الإدخال
+  // التقاط مسح قارئ الباركود (USB / Bluetooth) من أي موضع داخل شاشة نقطة البيع النشطة دون تلويث حقول الإدخال أو حذف الكتابة اليدوية السريعة
   useEffect(() => {
-    const SCANNER_MAX_INTER_KEY_MS = 50;
-    const SCANNER_ENTER_MAX_DELAY_MS = 120;
+    const SCANNER_MAX_INTER_KEY_MS = 35;
+    const SCANNER_ENTER_MAX_DELAY_MS = 85;
+    const SCANNER_LOCK_CHAR_THRESHOLD = 3;
     const MIN_BARCODE_LENGTH = 3;
 
     interface PreBurstSnapshot {
       element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
       domValue: string;
+      selectionStart: number | null;
+      selectionEnd: number | null;
       cartSnapshot: CartItem[];
       fieldsSnapshot: typeof latestPosFieldsRef.current;
     }
@@ -2169,8 +2171,17 @@ export const POSPage: React.FC<POSPageProps> = ({
     let lastKeyTime = 0;
     let isBurstLocked = false;
     let preBurstSnapshot: PreBurstSnapshot | null = null;
+    let abortLockTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearAbortLockTimer = () => {
+      if (abortLockTimer !== null) {
+        clearTimeout(abortLockTimer);
+        abortLockTimer = null;
+      }
+    };
 
     const resetBurstState = () => {
+      clearAbortLockTimer();
       burstChars = [];
       firstKeyTime = 0;
       lastKeyTime = 0;
@@ -2180,7 +2191,8 @@ export const POSPage: React.FC<POSPageProps> = ({
 
     const setReactElementValue = (
       el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-      nextValue: string
+      nextValue: string,
+      caretPos?: number | null
     ) => {
       try {
         const currentVal = el.value;
@@ -2199,6 +2211,16 @@ export const POSPage: React.FC<POSPageProps> = ({
           nativeSetter.call(el, nextValue);
         } else {
           el.value = nextValue;
+        }
+        if (
+          typeof caretPos === 'number' &&
+          (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+        ) {
+          try {
+            el.setSelectionRange(caretPos, caretPos);
+          } catch {
+            // بعض أنواع input مثل number لا تدعم setSelectionRange
+          }
         }
         el.dispatchEvent(new Event('input', { bubbles: true }));
         if (el instanceof HTMLSelectElement) {
@@ -2234,7 +2256,54 @@ export const POSPage: React.FC<POSPageProps> = ({
       setIsCommissionPercentOverridden(f.isCommissionPercentOverridden);
 
       if (snap.element) {
-        setReactElementValue(snap.element, snap.domValue);
+        setReactElementValue(snap.element, snap.domValue, snap.selectionStart);
+      }
+    };
+
+    // إذا تم قفل التتابع بعد 3+ مفاتيح سريعة جدًا (<= 35ms) لكن لم ينتهِ بـ Enter كمسح باركود، نعيد الأحرف المكتوبة للحقل حتى لا يُفقد أي حرف من كتابة المستخدم
+    const replayAbortedLockedBurstToInput = () => {
+      if (!isBurstLocked || !preBurstSnapshot || burstChars.length === 0) return;
+      const snap = preBurstSnapshot;
+      const el = snap.element;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        const typedSeq = burstChars.join('');
+        const base = snap.domValue || '';
+        const start =
+          typeof snap.selectionStart === 'number'
+            ? Math.max(0, Math.min(base.length, snap.selectionStart))
+            : base.length;
+        const end =
+          typeof snap.selectionEnd === 'number'
+            ? Math.max(start, Math.min(base.length, snap.selectionEnd))
+            : start;
+        const reconstructed = `${base.slice(0, start)}${typedSeq}${base.slice(end)}`;
+        setReactElementValue(el, reconstructed, start + typedSeq.length);
+      }
+    };
+
+    const scheduleAbortLockReplay = () => {
+      clearAbortLockTimer();
+      abortLockTimer = setTimeout(() => {
+        if (isBurstLocked) {
+          replayAbortedLockedBurstToInput();
+          resetBurstState();
+        }
+      }, SCANNER_ENTER_MAX_DELAY_MS + 10);
+    };
+
+    const captureElementSelection = (
+      el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null
+    ): { start: number | null; end: number | null } => {
+      if (!el || el instanceof HTMLSelectElement) {
+        return { start: null, end: null };
+      }
+      try {
+        return {
+          start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
+          end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length
+        };
+      } catch {
+        return { start: el.value.length, end: el.value.length };
       }
     };
 
@@ -2288,6 +2357,9 @@ export const POSPage: React.FC<POSPageProps> = ({
       }
 
       if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing) {
+        if (isBurstLocked) {
+          replayAbortedLockedBurstToInput();
+        }
         resetBurstState();
         return;
       }
@@ -2310,6 +2382,7 @@ export const POSPage: React.FC<POSPageProps> = ({
           dtSinceLastChar <= SCANNER_ENTER_MAX_DELAY_MS &&
           (isBurstLocked || avgInterval <= SCANNER_MAX_INTER_KEY_MS)
         ) {
+          clearAbortLockTimer();
           (e as any).__posBarcodeHandled = true;
           e.preventDefault();
           e.stopPropagation();
@@ -2325,12 +2398,18 @@ export const POSPage: React.FC<POSPageProps> = ({
           return;
         }
 
+        if (isBurstLocked) {
+          replayAbortedLockedBurstToInput();
+        }
         resetBurstState();
         return;
       }
 
       // أي مفتاح غير طباعي (مثل F2، F3، F4، Esc، الأسهم، Backspace، Tab) يُترك يعمل طبيعيًا ويصفّر المخزن المؤقت
       if (e.key.length !== 1) {
+        if (isBurstLocked) {
+          replayAbortedLockedBurstToInput();
+        }
         resetBurstState();
         return;
       }
@@ -2338,16 +2417,24 @@ export const POSPage: React.FC<POSPageProps> = ({
       const dt = lastKeyTime > 0 ? now - lastKeyTime : Infinity;
 
       if (dt > SCANNER_MAX_INTER_KEY_MS) {
+        if (isBurstLocked) {
+          replayAbortedLockedBurstToInput();
+        }
+        clearAbortLockTimer();
+
         const editableTarget =
           target instanceof HTMLInputElement ||
           target instanceof HTMLTextAreaElement ||
           target instanceof HTMLSelectElement
             ? target
             : null;
+        const sel = captureElementSelection(editableTarget);
 
         preBurstSnapshot = {
           element: editableTarget,
           domValue: editableTarget ? editableTarget.value : '',
+          selectionStart: sel.start,
+          selectionEnd: sel.end,
           cartSnapshot: cartRef.current.map(line => ({ ...line })),
           fieldsSnapshot: { ...latestPosFieldsRef.current }
         };
@@ -2358,14 +2445,21 @@ export const POSPage: React.FC<POSPageProps> = ({
         return;
       }
 
-      // تتابع سريع من قارئ الباركود (الفاصل الزمني <= 50ms)
+      // تتابع سريع (الفاصل الزمني <= 35ms)
       burstChars.push(e.key);
       lastKeyTime = now;
+
+      // عند المفتاح الثاني فقط (burstChars.length === 2)، نسمح بالمرور الطبيعي حتى لا تتأثر الكتابة اليدوية السريعة بإصبعين
+      // ويبدأ قفل التتابع واستعادة اللقطة فقط عند وصول 3 مفاتيح متتالية بسرعة القارئ الآلي (<= 35ms لكل فاصل)
+      if (burstChars.length < SCANNER_LOCK_CHAR_THRESHOLD) {
+        return;
+      }
 
       if (!isBurstLocked) {
         isBurstLocked = true;
         restorePreBurstSnapshot();
       }
+      scheduleAbortLockReplay();
 
       e.preventDefault();
       e.stopPropagation();
@@ -2374,6 +2468,7 @@ export const POSPage: React.FC<POSPageProps> = ({
 
     window.addEventListener('keydown', handleGlobalKeyDown, true);
     return () => {
+      clearAbortLockTimer();
       window.removeEventListener('keydown', handleGlobalKeyDown, true);
     };
   }, [

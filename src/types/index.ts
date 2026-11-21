@@ -383,6 +383,8 @@ export interface InvoicePrintSettings {
   printedItemLabel?: 'name' | 'printName';
 }
 
+export type BarcodeScanQuantityMode = 'increment' | 'edit_quantity';
+
 // 3. إعدادات عرض الأصناف وشاشة المبيعات
 export interface DisplaySettings {
   showItemImages: boolean;
@@ -398,6 +400,8 @@ export interface DisplaySettings {
   keyboardShortcuts?: KeyboardShortcutsSettings;
   /** معرّفات التصنيفات المختارة للعرض في شاشة نقطة البيع فقط */
   posVisibleCategoryIds?: string[];
+  /** طريقة إضافة الكمية عند مسح الباركود على مستوى المنشأة */
+  barcodeScanMode?: BarcodeScanQuantityMode;
 }
 
 // 4. سجل التدقيق
