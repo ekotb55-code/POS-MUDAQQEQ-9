@@ -7,6 +7,8 @@ import {
   UserAccount
 } from '../types';
 import { CameraBarcodeScannerModal } from './CameraBarcodeScannerModal';
+import { BarcodeScanModeSelect } from './BarcodeScanModeSelect';
+import { readUiPrefs } from '../utils/uiScale';
 import { generateIdempotencyKey } from '../utils/idempotency';
 import { useUserWarehouses } from '../hooks/useUserWarehouses';
 import {
@@ -103,6 +105,8 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
   const [invoiceSearchQuery, setInvoiceSearchQuery] = useState('');
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [scanFeedback, setScanFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [selectedLineIndex, setSelectedLineIndex] = useState<number | null>(null);
+  const [focusQtyToken, setFocusQtyToken] = useState<number>(0);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -110,6 +114,25 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const idempotencyKeyRef = useRef<string>(generateIdempotencyKey());
+
+  useEffect(() => {
+    if (selectedLineIndex === null || !focusQtyToken) return;
+    const timer = setTimeout(() => {
+      const rowEl = document.querySelector(
+        `[data-sales-return-row-idx="${selectedLineIndex}"]`
+      ) as HTMLElement | null;
+      rowEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      const qtyInput = document.querySelector(
+        `[data-sales-return-qty-input-idx="${selectedLineIndex}"]`
+      ) as HTMLInputElement | null;
+      if (qtyInput) {
+        qtyInput.focus();
+        qtyInput.select();
+      }
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [selectedLineIndex, focusQtyToken]);
 
   // ضبط المخزن الافتراضي للمستخدم
   useEffect(() => {
@@ -153,6 +176,7 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
   // Build invoice lines whenever invoice is selected
   const handleSelectInvoice = (invNum: string) => {
     setSelectedInvoiceNumber(invNum);
+    setSelectedLineIndex(null);
     setErrorMsg(null);
     setIsUnknownResultError(false);
     idempotencyKeyRef.current = generateIdempotencyKey();
@@ -260,15 +284,35 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
 
       if (lineIdx >= 0) {
         const line = returnLinesState[lineIdx];
+        const scanMode = readUiPrefs().barcodeScanMode;
+
+        // في وضع «مسح الصنف ثم تعديل الكمية»: إذا كان الصنف قد أُضيف للمرتجع بالفعل (كميته > 0)، نحدد سطره لتعديل الكمية يدويًا دون زيادة تلقائية
+        if (line.returnedQuantity > 0 && scanMode === 'edit_quantity') {
+          playBeep();
+          setSelectedLineIndex(lineIdx);
+          if (!isCameraModalOpen) {
+            setFocusQtyToken(prev => prev + 1);
+          }
+          setScanFeedback({
+            type: 'success',
+            message: `تم تحديد سطر الصنف "${line.itemName}" (الكمية المرتجعة: ${line.returnedQuantity}) — يمكنك تعديل الكمية يدويًا`
+          });
+          setBarcodeInput('');
+          setTimeout(() => setScanFeedback(null), 3000);
+          return;
+        }
+
         if (line.returnedQuantity < line.maxQuantity) {
           playBeep();
           const nextQty = line.returnedQuantity + 1;
           setReturnLinesState(prev => prev.map((l, i) => i === lineIdx ? { ...l, returnedQuantity: nextQty } : l));
+          setSelectedLineIndex(lineIdx);
           setScanFeedback({
             type: 'success',
             message: `تم زيادة كمية المرتجع للصنف: "${line.itemName}" (أصبح: ${nextQty})`
           });
         } else {
+          setSelectedLineIndex(lineIdx);
           setScanFeedback({
             type: 'error',
             message: `الصنف "${line.itemName}" وصل للحد الأقصى القابل للإرجاع من هذه الفاتورة (${line.maxQuantity})`
@@ -310,8 +354,10 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
 
   const handleManualBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (barcodeInput.trim()) {
-      handleBarcodeScanned(barcodeInput.trim());
+    const code = barcodeInput.trim();
+    if (code) {
+      setBarcodeInput('');
+      handleBarcodeScanned(code);
     }
   };
 
@@ -474,6 +520,8 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
           </button>
         </form>
 
+        <BarcodeScanModeSelect />
+
         <div>
           <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
             البحث في الفواتير
@@ -570,8 +618,15 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
             </tr>
           </thead>
           <tbody>
-            {returnLinesState.map((line, idx) => (
-              <tr key={idx}>
+            {returnLinesState.map((line, idx) => {
+              const isSelectedLine = selectedLineIndex === idx;
+              return (
+              <tr
+                key={idx}
+                data-sales-return-row-idx={idx}
+                data-selected-line={isSelectedLine ? 'true' : undefined}
+                className={isSelectedLine ? 'bg-sky-50/80 ring-2 ring-inset ring-[#1668B2]' : undefined}
+              >
                 <td className={`${COMPACT_TABLE_NUM_CLASS} font-mono text-[var(--text-secondary)]`}>
                   #{line.invoiceLineIndex}
                 </td>
@@ -609,8 +664,15 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
                         type="number"
                         min="0"
                         max={line.maxQuantity}
+                        data-sales-return-qty-input-idx={idx}
                         value={line.returnedQuantity}
                         onChange={(e) => updateLineQty(idx, parseInt(e.target.value) || 0)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            barcodeInputRef.current?.focus();
+                          }
+                        }}
                         className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.number} text-center font-mono font-bold text-xs`}
                       />
                       <button
@@ -646,7 +708,8 @@ export const SalesReturnTerminalView: React.FC<SalesReturnTerminalViewProps> = (
                   />
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </CompactTable>
       )}

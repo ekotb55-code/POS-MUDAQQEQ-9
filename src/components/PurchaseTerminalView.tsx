@@ -8,6 +8,8 @@ import {
 import { api } from '../api/client';
 import { useUserWarehouses, fetchAllWarehouseStockMap } from '../hooks/useUserWarehouses';
 import { CameraBarcodeScannerModal } from './CameraBarcodeScannerModal';
+import { BarcodeScanModeSelect } from './BarcodeScanModeSelect';
+import { readUiPrefs } from '../utils/uiScale';
 import { generateIdempotencyKey } from '../utils/idempotency';
 import {
   PageSurface,
@@ -102,6 +104,8 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [scanFeedback, setScanFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [focusQtyToken, setFocusQtyToken] = useState<number>(0);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +113,25 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const idempotencyKeyRef = useRef<string>(generateIdempotencyKey());
+
+  useEffect(() => {
+    if (!selectedItemId || !focusQtyToken) return;
+    const timer = setTimeout(() => {
+      const rowEl = document.querySelector(
+        `[data-purchase-row-id="${CSS.escape(selectedItemId)}"]`
+      ) as HTMLElement | null;
+      rowEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      const qtyInput = document.querySelector(
+        `[data-purchase-qty-input-id="${CSS.escape(selectedItemId)}"]`
+      ) as HTMLInputElement | null;
+      if (qtyInput) {
+        qtyInput.focus();
+        qtyInput.select();
+      }
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [selectedItemId, focusQtyToken]);
 
   // ضبط المخزن الافتراضي للمستخدم
   useEffect(() => {
@@ -269,7 +292,26 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
     });
 
     if (found) {
+      const existingLine = lines.find((l) => l.itemId === found.id);
+      const scanMode = readUiPrefs().barcodeScanMode;
+
+      if (existingLine && scanMode === 'edit_quantity') {
+        playBeep();
+        setSelectedItemId(found.id);
+        if (!isCameraModalOpen) {
+          setFocusQtyToken((prev) => prev + 1);
+        }
+        setScanFeedback({
+          type: 'success',
+          message: `تم تحديد سطر الصنف "${found.name}" (الكمية الحالية: ${existingLine.quantity}) — يمكنك تعديل الكمية يدويًا`,
+        });
+        setBarcodeInput('');
+        setTimeout(() => setScanFeedback(null), 3000);
+        return;
+      }
+
       handleAddItemToInvoice(found, clean);
+      setSelectedItemId(found.id);
       setBarcodeInput('');
     } else {
       setScanFeedback({
@@ -282,8 +324,10 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
 
   const handleManualBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (barcodeInput.trim()) {
-      handleBarcodeScanned(barcodeInput.trim());
+    const code = barcodeInput.trim();
+    if (code) {
+      setBarcodeInput('');
+      handleBarcodeScanned(code);
     }
   };
 
@@ -324,6 +368,7 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
 
   const handleRemoveLine = (itemId: string) => {
     setLines((prev) => prev.filter((l) => l.itemId !== itemId));
+    setSelectedItemId((prev) => (prev === itemId ? null : prev));
   };
 
   const handleClearAll = () => {
@@ -572,6 +617,8 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
           </button>
         </form>
 
+        <BarcodeScanModeSelect />
+
         <div>
           <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">بحث في الكتالوج</label>
           <div className="relative">
@@ -659,8 +706,15 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
               </td>
             </tr>
           ) : (
-            lines.map((line, idx) => (
-              <tr key={line.itemId}>
+            lines.map((line, idx) => {
+              const isSelectedLine = selectedItemId === line.itemId;
+              return (
+              <tr
+                key={line.itemId}
+                data-purchase-row-id={line.itemId}
+                data-selected-line={isSelectedLine ? 'true' : undefined}
+                className={isSelectedLine ? 'bg-sky-50/80 ring-2 ring-inset ring-[#1668B2]' : undefined}
+              >
                 <td className={`${COMPACT_TABLE_NUM_CLASS} font-mono text-[var(--text-secondary)]`}>{idx + 1}</td>
                 <td className={COMPACT_TABLE_TEXT_CLASS}>
                   <div className="font-bold">{line.itemName}</div>
@@ -684,8 +738,15 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
                     <input
                       type="number"
                       min="1"
+                      data-purchase-qty-input-id={line.itemId}
                       value={line.quantity}
                       onChange={(e) => handleUpdateQuantity(line.itemId, Math.max(1, parseInt(e.target.value) || 1))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          barcodeInputRef.current?.focus();
+                        }
+                      }}
                       className={`${FORM_CONTROL_BASE_CLASS} w-20 text-center font-bold font-mono text-xs`}
                     />
                     <button
@@ -722,7 +783,8 @@ export const PurchaseTerminalView: React.FC<PurchaseTerminalViewProps> = ({
                   </button>
                 </td>
               </tr>
-            ))
+              );
+            })
           )}
         </tbody>
         {lines.length > 0 && (

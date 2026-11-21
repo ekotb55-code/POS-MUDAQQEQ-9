@@ -39,6 +39,7 @@ import {
   useModalShortcuts,
   ShortcutBadge
 } from '../../context/KeyboardShortcutsContext';
+import { BarcodeScanModeSelect } from '../BarcodeScanModeSelect';
 
 export type PosSaleMode = 'platform' | 'customer';
 
@@ -118,6 +119,8 @@ export interface PosInvoicePanelProps {
   onOpenScanner: () => void;
   scanFeedback?: { type: 'success' | 'error'; message: string } | null;
   onClearScanFeedback?: () => void;
+  selectedCartItemId?: string | null;
+  focusCartQtyToken?: number;
 
   // Notes
   notes: string;
@@ -271,6 +274,8 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
   onOpenScanner,
   scanFeedback,
   onClearScanFeedback,
+  selectedCartItemId = null,
+  focusCartQtyToken = 0,
 
   notes,
   onNotesChange,
@@ -369,6 +374,26 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
   useEffect(() => {
     setIsDenomsOpen(readBooleanPref(denominationsStorageKey, false));
   }, [denominationsStorageKey]);
+
+  // عند تحديد سطر موجود بالمسح في وضع «مسح الصنف ثم تعديل الكمية»: تمرير السطر للواجهة وتحديد خانة الكمية
+  useEffect(() => {
+    if (!selectedCartItemId || !focusCartQtyToken) return;
+    const timer = setTimeout(() => {
+      const rowEl = document.querySelector(
+        `[data-pos-cart-row-id="${CSS.escape(selectedCartItemId)}"]`
+      ) as HTMLElement | null;
+      rowEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      const qtyInput = document.querySelector(
+        `[data-pos-qty-input-id="${CSS.escape(selectedCartItemId)}"]`
+      ) as HTMLInputElement | null;
+      if (qtyInput) {
+        qtyInput.focus();
+        qtyInput.select();
+      }
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [selectedCartItemId, focusCartQtyToken]);
 
   const handleToggleDenoms = () => {
     setIsDenomsOpen(prev => {
@@ -1299,14 +1324,16 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
 
       {/* 3. الباركود وبحث الصنف */}
       <div className="pt-4 border-t border-slate-200 space-y-3">
-        <div className="space-y-1">
-          <label
-            htmlFor="pos-barcode-input"
-            className="text-xs font-bold text-slate-800 flex items-center gap-1.5"
-          >
-            <span>الباركود:</span>
-            <ShortcutBadge actionId="pos.focus_barcode" />
-          </label>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <label
+              htmlFor="pos-barcode-input"
+              className="text-xs font-bold text-slate-800 flex items-center gap-1.5"
+            >
+              <span>الباركود:</span>
+              <ShortcutBadge actionId="pos.focus_barcode" />
+            </label>
+          </div>
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <input
@@ -1318,8 +1345,10 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    if (barcodeInput.trim()) {
-                      onBarcodeSubmit(barcodeInput.trim());
+                    const code = e.currentTarget.value.trim() || barcodeInput.trim();
+                    if (code) {
+                      onBarcodeInput('');
+                      onBarcodeSubmit(code);
                     }
                   }
                 }}
@@ -1339,6 +1368,8 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
               <Camera className="w-4 h-4 text-cyan-200" />
             </button>
           </div>
+
+          <BarcodeScanModeSelect compact showLabel={true} />
 
           {scanFeedback && (
             <div
@@ -1466,12 +1497,18 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
                   const isPriceViolating = Boolean(priceViolatingItemIds?.has(c.item.id));
                   const lineTotal = (c.customerUnitPrice || c.salePriceAtSale) * c.quantity;
 
+                  const isSelectedLine = selectedCartItemId === c.item.id;
+
                   return (
                     <tr
                       key={c.item.id}
+                      data-pos-cart-row-id={c.item.id}
+                      data-selected-line={isSelectedLine ? 'true' : undefined}
                       data-price-violation={isPriceViolating ? 'true' : undefined}
                       className={`transition ${
-                        isPriceViolating || isStockShortage
+                        isSelectedLine
+                          ? 'bg-sky-50/90 ring-2 ring-inset ring-[#1668B2]'
+                          : isPriceViolating || isStockShortage
                           ? 'bg-rose-50/70'
                           : isOfflineNeedsReview
                           ? 'bg-amber-50/70'
@@ -1507,11 +1544,18 @@ export const PosInvoicePanel: React.FC<PosInvoicePanelProps> = ({
                         <input
                           type="number"
                           min="1"
+                          data-pos-qty-input-id={c.item.id}
                           value={c.quantity}
                           onChange={(e) => {
                             const val = parseInt(e.target.value, 10);
                             if (!isNaN(val)) {
                               onUpdateQuantity(c.item.id, val);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              document.getElementById('pos-barcode-input')?.focus();
                             }
                           }}
                           className="w-full min-h-[38px] box-border px-1 text-center font-mono font-bold text-xs border border-slate-300 rounded bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 tabular-nums [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"

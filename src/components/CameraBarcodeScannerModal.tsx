@@ -71,41 +71,51 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
   const [lastScannedCode, setLastScannedCode] = useState<string | null>(null);
   const [lastMatchedItem, setLastMatchedItem] = useState<Item | null>(null);
   const [scanStatus, setScanStatus] = useState<'idle' | 'success' | 'not_found'>('idle');
+  const [isCameraCodeLocked, setIsCameraCodeLocked] = useState<boolean>(false);
 
   // إدخال يدوي / قارئ USB أو بلوتوث
   const [manualInput, setManualInput] = useState('');
 
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
   const scannerContainerId = 'interactive-barcode-scanner-view';
-  const cooldownRef = useRef(false);
 
-  // البحث عن الصنف بمطابقة الباركود الأساسي أو الفرعي
+  // قفل الحضور المستمر للكاميرا: يمنع تكرار نفس الرمز طالما بقي ظاهرًا في إطارات متتابعة،
+  // ويعيد التسليح فقط بعد اختفاء الرمز من مجال الكاميرا لعدة إطارات متتالية أو بطلب إعادة تسليح صريح.
+  const lockedCameraCodeRef = useRef<string | null>(null);
+  const absentFramesCountRef = useRef<number>(0);
+  const lastCameraSeenAtRef = useRef<number>(0);
+  const lastCameraEmitAtRef = useRef<number>(0);
+
+  // الاحتفاظ بأحدث المراجع للدوال والبيانات داخل callbacks مكتبة Html5Qrcode
+  const itemsRef = useRef<Item[]>(items);
+  itemsRef.current = items;
+  const soundEnabledRef = useRef<boolean>(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
+  const onBarcodeDetectedRef = useRef(onBarcodeDetected);
+  onBarcodeDetectedRef.current = onBarcodeDetected;
+
+  // البحث عن الصنف بمطابقة الباركود الأساسي أو الفرعي أو الكود
   const findItemByBarcode = (code: string): Item | null => {
     const clean = code.trim().toLowerCase();
     if (!clean) return null;
 
-    return items.find(it => {
+    return itemsRef.current.find(it => {
       // 1. فحص الباركود الأساسي
       if (it.barcode && it.barcode.trim().toLowerCase() === clean) return true;
       // 2. فحص الباركودات الفرعية
       if (it.secondaryBarcodes && it.secondaryBarcodes.some(sb => sb.trim().toLowerCase() === clean)) return true;
       // 3. فحص كائنات الباركود إن وجدت
       if (it.barcodes && it.barcodes.some(b => b.barcode.trim().toLowerCase() === clean)) return true;
+      // 4. فحص كود الصنف SKU
+      if (it.sku && it.sku.trim().toLowerCase() === clean) return true;
       return false;
     }) || null;
   };
 
-  // معالجة كود تم مسحه بنجاح
-  const handleBarcodeDecoded = (decodedText: string) => {
-    if (cooldownRef.current) return;
-    const cleanCode = decodedText.trim();
+  // تنفيذ حدث مسح معتمد (من الكاميرا بعد اجتياز قفل الإطارات، أو مباشرة من قارئ USB/Bluetooth)
+  const emitScannedBarcode = (rawCode: string) => {
+    const cleanCode = rawCode.trim();
     if (!cleanCode) return;
-
-    // مهلة تهدئة 1.2 ثانية لمنع القراءات المتلاحقة لنفس الكود
-    cooldownRef.current = true;
-    setTimeout(() => {
-      cooldownRef.current = false;
-    }, 1200);
 
     const matched = findItemByBarcode(cleanCode);
     setLastScannedCode(cleanCode);
@@ -113,13 +123,61 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
 
     if (matched) {
       setScanStatus('success');
-      if (soundEnabled) {
+      if (soundEnabledRef.current) {
         playScanSuccessBeep();
       }
-      onBarcodeDetected(cleanCode, matched);
+      onBarcodeDetectedRef.current(cleanCode, matched);
     } else {
       setScanStatus('not_found');
-      onBarcodeDetected(cleanCode, null);
+      onBarcodeDetectedRef.current(cleanCode, null);
+    }
+  };
+
+  // إعادة تسليح المسح بالكاميرا يدويًا للسماح بمسح نفس الرمز مرة أخرى فورًا
+  const rearmCameraScan = () => {
+    lockedCameraCodeRef.current = null;
+    absentFramesCountRef.current = 0;
+    setIsCameraCodeLocked(false);
+  };
+
+  // معالجة إطار كاميرا تم فك تشفير باركود فيه
+  const handleCameraFrameDecoded = (decodedText: string) => {
+    const cleanCode = decodedText.trim();
+    if (!cleanCode) return;
+    const normalizedCode = cleanCode.toLowerCase();
+    const now = Date.now();
+
+    // إذا كان نفس الرمز ما زال ظاهرًا أمام الكاميرا في إطارات متتابعة، اعتبره نفس الحدث ولا تكرر الإضافة
+    if (lockedCameraCodeRef.current === normalizedCode) {
+      absentFramesCountRef.current = 0;
+      lastCameraSeenAtRef.current = now;
+      return;
+    }
+
+    // فاصل قصير جدًا عند تبديل رمز مختلف أثناء حركة اليد لمنع القراءات المشوشة العابرة
+    if (lockedCameraCodeRef.current !== null && now - lastCameraEmitAtRef.current < 250) {
+      return;
+    }
+
+    lockedCameraCodeRef.current = normalizedCode;
+    absentFramesCountRef.current = 0;
+    lastCameraSeenAtRef.current = now;
+    lastCameraEmitAtRef.current = now;
+    setIsCameraCodeLocked(true);
+
+    emitScannedBarcode(cleanCode);
+  };
+
+  // معالجة إطار كاميرا خالٍ من الباركود: يعيد تسليح المسح تلقائيًا بعد اختفاء الرمز بوضوح
+  const handleCameraFrameAbsent = () => {
+    if (lockedCameraCodeRef.current === null) return;
+    absentFramesCountRef.current += 1;
+    const elapsedSinceLastSeen = Date.now() - lastCameraSeenAtRef.current;
+    // 8 إطارات متتالية بدون رمز (حوالي نصف ثانية على 15fps) مع مرور 550ms على آخر ظهور
+    if (absentFramesCountRef.current >= 8 && elapsedSinceLastSeen >= 550) {
+      lockedCameraCodeRef.current = null;
+      absentFramesCountRef.current = 0;
+      setIsCameraCodeLocked(false);
     }
   };
 
@@ -128,6 +186,7 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
     try {
       setCameraError(null);
       setIsScanning(true);
+      rearmCameraScan();
 
       if (html5QrCodeRef.current) {
         try {
@@ -172,10 +231,10 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
         cameraConfig,
         qrConfig,
         (decodedText) => {
-          handleBarcodeDecoded(decodedText);
+          handleCameraFrameDecoded(decodedText);
         },
         () => {
-          // استمرار المسح حتى العثور على كود
+          handleCameraFrameAbsent();
         }
       );
 
@@ -217,6 +276,7 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
     }
     setIsScanning(false);
     setTorchEnabled(false);
+    rearmCameraScan();
   };
 
   // تبديل كشاف الإضاءة
@@ -263,13 +323,14 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
     };
   }, [isOpen]);
 
-  // إرسال الكود اليدوي
+  // إرسال الكود اليدوي أو من قارئ USB / Bluetooth:
+  // كل حدث إرسال (نهاية مسح Enter منفصلة) يُنفّذ فورًا كمسحة مستقلة دون حجب بقفل الكاميرا أو مهلة التهدئة
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const clean = manualInput.trim();
     if (!clean) return;
-    handleBarcodeDecoded(clean);
     setManualInput('');
+    emitScannedBarcode(clean);
   };
 
   if (!isOpen) return null;
@@ -368,12 +429,32 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
 
                 <div className="absolute bottom-2 text-center">
                   <span className="px-2.5 py-1 rounded-full bg-slate-900/80 text-[11px] font-medium text-cyan-200 border border-slate-700/60">
-                    ضع الباركود أو الـ QR داخل الإطار
+                    {isCameraCodeLocked
+                      ? 'تمت قراءة الرمز — أبعد الرمز عن الإطار أو أعد التسليح لمسح جديد'
+                      : 'ضع الباركود أو الـ QR داخل الإطار'}
                   </span>
                 </div>
               </div>
             )}
           </div>
+
+          {/* زر إعادة تسليح المسح بوضوح عند بقاء نفس الرمز أمام الكاميرا */}
+          {isCameraCodeLocked && (
+            <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-900 text-xs">
+              <span className="font-semibold">
+                الكاميرا أوقفت تكرار الرمز الحالي ({lastScannedCode}) حتى يختفي من الإطار
+              </span>
+              <button
+                type="button"
+                data-testid="camera-rearm-scan-btn"
+                onClick={rearmCameraScan}
+                className="px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] font-bold transition cursor-pointer shrink-0 inline-flex items-center gap-1"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>إعادة تسليح المسح</span>
+              </button>
+            </div>
+          )}
 
           {/* اختيار الكاميرا إذا وجد أكثر من كاميرا */}
           {cameras.length > 1 && (
@@ -410,7 +491,7 @@ export const CameraBarcodeScannerModal: React.FC<CameraBarcodeScannerModalProps>
               <div className="flex items-center gap-2.5 min-w-0">
                 <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
                 <div className="min-w-0">
-                  <p className="text-xs font-bold truncate">تمت إضافة الصنف للسلة:</p>
+                  <p className="text-xs font-bold truncate">تم مسح الصنف بنجاح:</p>
                   <p className="text-sm font-extrabold text-emerald-700 truncate">{lastMatchedItem.name}</p>
                   <p className="text-[11px] text-emerald-600 font-mono mt-0.5">{lastScannedCode}</p>
                 </div>

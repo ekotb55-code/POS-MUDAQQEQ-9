@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   ArrowLeftRight,
   Barcode,
+  Camera,
   Search,
   Trash2,
   CheckCircle2,
@@ -23,6 +24,9 @@ import {
 import { hasPermission } from '../utils/permissions';
 import { normalizeArabicText, formatMoney } from '../utils/dateUtils';
 import { generateIdempotencyKey } from '../utils/idempotency';
+import { CameraBarcodeScannerModal } from '../components/CameraBarcodeScannerModal';
+import { BarcodeScanModeSelect } from '../components/BarcodeScanModeSelect';
+import { readUiPrefs } from '../utils/uiScale';
 import {
   PageSurface,
   SectionHeading,
@@ -120,6 +124,10 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
   const [lines, setLines] = useState<TransferDraftLine[]>([]);
   const [barcodeInput, setBarcodeInput] = useState<string>('');
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const [scanFeedback, setScanFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isCameraModalOpen, setIsCameraModalOpen] = useState<boolean>(false);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [focusQtyToken, setFocusQtyToken] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
 
@@ -132,6 +140,25 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
   const barcodeInputRef = useRef<HTMLInputElement | null>(null);
   const searchWrapperRef = useRef<HTMLDivElement | null>(null);
   const idempotencyKeyRef = useRef<string>(generateIdempotencyKey());
+
+  useEffect(() => {
+    if (!selectedItemId || !focusQtyToken) return;
+    const timer = setTimeout(() => {
+      const rowEl = document.querySelector(
+        `[data-transfer-row-id="${CSS.escape(selectedItemId)}"]`
+      ) as HTMLElement | null;
+      rowEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      const qtyInput = document.querySelector(
+        `[data-transfer-qty-input-id="${CSS.escape(selectedItemId)}"]`
+      ) as HTMLInputElement | null;
+      if (qtyInput) {
+        qtyInput.focus();
+        qtyInput.select();
+      }
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [selectedItemId, focusQtyToken]);
 
   useEffect(() => {
     setAllowNegativeTransfer(Boolean(propAllowNegative));
@@ -351,24 +378,66 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
     [stocksMap]
   );
 
-  const handleBarcodeKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    const trimmed = barcodeInput.trim();
+  const handleBarcodeScanned = (rawCode: string) => {
+    const trimmed = rawCode.trim();
     if (!trimmed) return;
+
+    setSubmitError(null);
+    setBarcodeError(null);
+    setScanFeedback(null);
 
     const matched = catalogItems.find(
       it => isItemActive(it) && itemMatchesBarcode(it, trimmed)
     );
     if (!matched) {
-      setBarcodeError(`لم يتم العثور على صنف نشط بالباركود أو الكود "${trimmed}"`);
+      const msg = `لم يتم العثور على صنف نشط بالباركود أو الكود "${trimmed}"`;
+      setBarcodeError(msg);
+      setScanFeedback({ type: 'error', message: msg });
+      return;
+    }
+
+    const existingLine = lines.find(l => l.itemId === matched.id);
+    const scanMode = readUiPrefs().barcodeScanMode;
+
+    if (existingLine && scanMode === 'edit_quantity') {
+      setSelectedItemId(matched.id);
+      if (!isCameraModalOpen) {
+        setFocusQtyToken(prev => prev + 1);
+      }
+      setBarcodeInput('');
+      setBarcodeError(null);
+      setScanFeedback({
+        type: 'success',
+        message: `تم تحديد سطر الصنف "${matched.name}" (الكمية الحالية: ${existingLine.quantity}) — يمكنك تعديل الكمية يدويًا`
+      });
+      setTimeout(() => setScanFeedback(null), 3000);
       return;
     }
 
     addOrIncrementItem(matched);
+    setSelectedItemId(matched.id);
     setBarcodeInput('');
     setBarcodeError(null);
+    setScanFeedback({
+      type: 'success',
+      message: `تمت إضافة الصنف: "${matched.name}"`
+    });
+    setTimeout(() => setScanFeedback(null), 3000);
   };
+
+  const handleBarcodeKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const trimmed = (e.currentTarget.value || barcodeInput).trim();
+    if (!trimmed) return;
+    setBarcodeInput('');
+    handleBarcodeScanned(trimmed);
+  };
+
+  const activeCatalogItems = useMemo(
+    () => catalogItems.filter(isItemActive),
+    [catalogItems]
+  );
 
   const filteredSearchItems = useMemo(() => {
     const active = catalogItems.filter(isItemActive);
@@ -413,6 +482,7 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
 
   const handleRemoveLine = (itemId: string) => {
     setLines(prev => prev.filter(l => l.itemId !== itemId));
+    setSelectedItemId(prev => (prev === itemId ? null : prev));
     setSubmitError(null);
   };
 
@@ -693,8 +763,18 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
-              {/* إدخال بالباركود وبحث الأصناف في صف واحد مضغوط */}
-              <div className="flex flex-wrap items-start gap-3">
+              {/* إدخال بالباركود، مسح بالكاميرا، اختيار وضع الإضافة، وبحث الأصناف */}
+              <div className="flex flex-wrap items-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsCameraModalOpen(true)}
+                  className="min-h-[44px] inline-flex items-center gap-1.5 px-4 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-bold transition cursor-pointer shrink-0"
+                  title="مسح الباركود بالكاميرا"
+                >
+                  <Camera className="w-4 h-4" />
+                  <span>مسح بالكاميرا</span>
+                </button>
+
                 <div>
                   <label
                     htmlFor="transfer-barcode-input"
@@ -718,10 +798,9 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
                       className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.code} pr-9 font-mono text-xs font-bold`}
                     />
                   </div>
-                  {barcodeError && (
-                    <p className="text-xs font-bold ui-stock-out mt-1">{barcodeError}</p>
-                  )}
                 </div>
+
+                <BarcodeScanModeSelect />
 
                 <div className="relative" ref={searchWrapperRef}>
                   <label
@@ -826,6 +905,29 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
                 </div>
               </div>
 
+              {barcodeError && (
+                <p className="text-xs font-bold ui-stock-out">{barcodeError}</p>
+              )}
+
+              {scanFeedback && !barcodeError && (
+                <div
+                  className={`px-3 py-2 rounded-lg border text-xs font-bold flex items-center justify-between gap-2 ${
+                    scanFeedback.type === 'success'
+                      ? 'border-emerald-300 text-emerald-800 bg-emerald-50/40'
+                      : 'border-rose-300 ui-stock-out bg-rose-50/40'
+                  }`}
+                >
+                  <span>{scanFeedback.message}</span>
+                  <button
+                    type="button"
+                    onClick={() => setScanFeedback(null)}
+                    className="text-xs text-[var(--text-secondary)] cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               {submitError && (
                 <div className="px-3 py-2 rounded-lg border border-[var(--stock-out-fg)] ui-stock-out text-xs font-bold flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -860,8 +962,14 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
                     {lines.map((line, index) => {
                       const evalRow = rowEvaluations[index];
                       const isRed = evalRow?.isInvalid;
+                      const isSelectedLine = selectedItemId === line.itemId;
                       return (
-                        <tr key={line.itemId}>
+                        <tr
+                          key={line.itemId}
+                          data-transfer-row-id={line.itemId}
+                          data-selected-line={isSelectedLine ? 'true' : undefined}
+                          className={isSelectedLine ? 'bg-sky-50/80 ring-2 ring-inset ring-[#1668B2]' : undefined}
+                        >
                           <td className={`text-center font-mono text-[var(--text-secondary)] ${COMPACT_TABLE_NUM_CLASS}`}>
                             {index + 1}
                           </td>
@@ -896,8 +1004,15 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
                                 min="0.001"
                                 step="any"
                                 dir="ltr"
+                                data-transfer-qty-input-id={line.itemId}
                                 value={line.quantity === 0 ? '' : line.quantity}
                                 onChange={e => handleUpdateLineQuantity(line.itemId, e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    barcodeInputRef.current?.focus();
+                                  }
+                                }}
                                 aria-label={`الكمية المنقولة للصنف ${line.itemName}`}
                                 className={`${FORM_CONTROL_BASE_CLASS} ${INPUT_WIDTH_CLASSES.number} text-center font-mono font-bold ${
                                   isRed ? 'border-rose-500 ui-stock-out' : ''
@@ -1111,6 +1226,20 @@ export const WarehouseTransferPage: React.FC<WarehouseTransferPageProps> = ({
           </div>
         </ModalShell>
       )}
+
+      {/* Camera Barcode Scanner Modal */}
+      <CameraBarcodeScannerModal
+        isOpen={isCameraModalOpen}
+        items={activeCatalogItems}
+        onClose={() => setIsCameraModalOpen(false)}
+        onBarcodeDetected={code => {
+          handleBarcodeScanned(code);
+        }}
+        onManualSearchRequest={term => {
+          setSearchQuery(term);
+          setIsSearchOpen(true);
+        }}
+      />
     </PageSurface>
   );
 };

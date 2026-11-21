@@ -431,13 +431,21 @@ export const POSPage: React.FC<POSPageProps> = ({
   };
 
   const handleResetPosUiPrefs = () => {
-    const next: UiPrefs = { ...DEFAULT_UI_PREFS, appScale: readUiPrefs().appScale };
+    const current = readUiPrefs();
+    const next: UiPrefs = {
+      ...DEFAULT_UI_PREFS,
+      appScale: current.appScale,
+      barcodeScanMode: current.barcodeScanMode
+    };
     setPosUiPrefs(next);
     applyUiPrefs(next, true, document.documentElement, draftSharedDisplay);
   };
 
   const handleSavePosUiPrefs = async () => {
-    const saved = writeUiPrefs(posUiPrefs);
+    const saved = writeUiPrefs({
+      ...posUiPrefs,
+      barcodeScanMode: readUiPrefs().barcodeScanMode
+    });
     setPosUiPrefs(saved);
     applyUiPrefs(saved, true, document.documentElement, draftSharedDisplay);
     if (canCustomizeDisplay && onUpdateDisplaySettings) {
@@ -1914,7 +1922,10 @@ export const POSPage: React.FC<POSPageProps> = ({
     }
   };
 
-  // البحث عن الصنف بالباركود وإضافته مباشرة
+  const [selectedCartItemId, setSelectedCartItemId] = useState<string | null>(null);
+  const [focusCartQtyToken, setFocusCartQtyToken] = useState<number>(0);
+
+  // البحث عن الصنف بالباركود وإضافته مباشرة حسب وضع إضافة الكمية بالباركود
   const handleBarcodeScanned = (scannedCode: string) => {
     const cleanCode = scannedCode.trim();
     if (!cleanCode) return;
@@ -1922,11 +1933,12 @@ export const POSPage: React.FC<POSPageProps> = ({
     setErrorMsg(null);
     setScanFeedback(null);
 
+    const lowerCode = cleanCode.toLowerCase();
     // البحث في الباركود الأساسي والباركودات الفرعية
     const foundItem = warehouseAwareItems.find(it => {
-      if (it.barcode && it.barcode.trim() === cleanCode) return true;
-      if (it.secondaryBarcodes && it.secondaryBarcodes.some(b => b.trim() === cleanCode)) return true;
-      if (it.barcodes && it.barcodes.some(b => b.barcode.trim() === cleanCode)) return true;
+      if (it.barcode && it.barcode.trim().toLowerCase() === lowerCode) return true;
+      if (it.secondaryBarcodes && it.secondaryBarcodes.some(b => b.trim().toLowerCase() === lowerCode)) return true;
+      if (it.barcodes && it.barcodes.some(b => b.barcode.trim().toLowerCase() === lowerCode)) return true;
       return false;
     });
 
@@ -1942,6 +1954,25 @@ export const POSPage: React.FC<POSPageProps> = ({
         return;
       }
 
+      const existingInCart = cart.find(c => c.item.id === foundItem.id);
+      const scanMode = readUiPrefs().barcodeScanMode;
+
+      // في وضع «مسح الصنف ثم تعديل الكمية»: إذا كان الصنف موجودًا في السلة، نحدد سطره لتعديل الكمية يدويًا دون زيادة تلقائية
+      if (existingInCart && scanMode === 'edit_quantity') {
+        playBeep();
+        setSelectedCartItemId(foundItem.id);
+        if (!isCameraModalOpen) {
+          setFocusCartQtyToken(prev => prev + 1);
+        }
+        setScanFeedback({
+          type: 'success',
+          message: `تم تحديد سطر الصنف "${foundItem.name}" (الكمية الحالية: ${existingInCart.quantity}) — يمكنك تعديل الكمية يدويًا`
+        });
+        setBarcodeInput('');
+        setTimeout(() => setScanFeedback(null), 3000);
+        return;
+      }
+
       if (!effectiveAllowNegativeStock && foundItem.stockQuantity <= 0) {
         setErrorMsg(`الكمية لا تكفي. المتاح: ${foundItem.stockQuantity}`);
         setScanFeedback({
@@ -1952,7 +1983,6 @@ export const POSPage: React.FC<POSPageProps> = ({
         return;
       }
 
-      const existingInCart = cart.find(c => c.item.id === foundItem.id);
       if (!effectiveAllowNegativeStock && existingInCart && existingInCart.quantity + 1 > foundItem.stockQuantity) {
         updateQuantity(foundItem.id, foundItem.stockQuantity);
         setErrorMsg(`الكمية لا تكفي. المتاح: ${foundItem.stockQuantity}`);
@@ -1966,6 +1996,7 @@ export const POSPage: React.FC<POSPageProps> = ({
 
       playBeep();
       addToCart(foundItem, cleanCode);
+      setSelectedCartItemId(foundItem.id);
       setScanFeedback({
         type: 'success',
         message: `تمت إضافة: "${foundItem.name}" (كود: ${cleanCode})`
@@ -2013,6 +2044,7 @@ export const POSPage: React.FC<POSPageProps> = ({
 
   const removeFromCart = (itemId: string) => {
     setCart(cart.filter(c => c.item.id !== itemId));
+    setSelectedCartItemId(prev => (prev === itemId ? null : prev));
     setPriceViolatingItemIds(prev => {
       if (!prev.has(itemId)) return prev;
       const next = new Set(prev);
@@ -3147,6 +3179,8 @@ export const POSPage: React.FC<POSPageProps> = ({
               onOpenScanner={() => setIsCameraModalOpen(true)}
               scanFeedback={scanFeedback}
               onClearScanFeedback={() => setScanFeedback(null)}
+              selectedCartItemId={selectedCartItemId}
+              focusCartQtyToken={focusCartQtyToken}
               notes={notes}
               onNotesChange={setNotes}
               totalBeforeDiscount={totalBeforeDiscount}
