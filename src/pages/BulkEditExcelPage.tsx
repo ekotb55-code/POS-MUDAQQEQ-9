@@ -97,6 +97,13 @@ const OPERATION_META_UI: Record<
     buttonLabel: 'إضافة تصنيفات بالإكسيل',
     isAdd: true,
   },
+  delete_categories: {
+    label: 'حذف التصنيفات بالإكسيل',
+    shortColDesc:
+      'عمود واحد فقط بعنوان «اسم التصنيف» — يُطابق اسم التصنيف الكامل حرفياً مع التصنيفات الموجودة (دون تقسيم عند / أو > أو أي علامة ترقيم)، ولا يُسمح بحذف تصنيف مرتبط بأصناف أو له فروع مرتبطة بأصناف أو ترك تصنيفات فرعية يتيمة.',
+    buttonLabel: 'حذف التصنيفات بالإكسيل',
+    isDelete: true,
+  },
   print_name: {
     label: 'تعديل اسم الطباعة',
     shortColDesc: 'عمودان إلزاميان: «اسم الصنف» و«اسم الطباعة»، وعمود اختياري «الكود/الباركود».',
@@ -200,7 +207,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
   const [operationType, setOperationType] = useState<PageOperationType>(() => {
     if (initialOperationType && OPERATION_META_UI[initialOperationType]) {
       if (initialOperationType === 'add_items' && !canCreateItems) return 'primary_barcode';
-      if (initialOperationType === 'add_categories' && !canManageCategories) return 'sale_price';
+      if ((initialOperationType === 'add_categories' || initialOperationType === 'delete_categories') && !canManageCategories) return 'sale_price';
       if (initialOperationType === 'purchase_price' && !canViewPurchase) return 'sale_price';
       if (initialOperationType === 'delete_items' && !canDeleteItems) return 'sale_price';
       return initialOperationType;
@@ -211,7 +218,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
   useEffect(() => {
     if (initialOperationType && OPERATION_META_UI[initialOperationType]) {
       if (initialOperationType === 'add_items' && !canCreateItems) return;
-      if (initialOperationType === 'add_categories' && !canManageCategories) return;
+      if ((initialOperationType === 'add_categories' || initialOperationType === 'delete_categories') && !canManageCategories) return;
       if (initialOperationType === 'purchase_price' && !canViewPurchase) return;
       if (initialOperationType === 'delete_items' && !canDeleteItems) return;
       setOperationType(initialOperationType);
@@ -315,7 +322,9 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
   const operationLabel = currentOpMeta.label;
   const isAddOperation = operationType === 'add_items';
   const isAddCategoriesOperation = operationType === 'add_categories';
-  const isDeleteOperation = operationType === 'delete_items';
+  const isDeleteCategoriesOperation = operationType === 'delete_categories';
+  const isDeleteItemsOperation = operationType === 'delete_items';
+  const isDeleteOperation = isDeleteItemsOperation || isDeleteCategoriesOperation;
   const isImagesOnly = operationType === 'images_only';
   const serverOperationType = operationType as BulkEditOperationType;
 
@@ -350,6 +359,10 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
     }
     if (nextOp === 'add_categories' && !canManageCategories) {
       setErrorMsg('غير مصرح لك بإضافة التصنيفات (تفتقر لصلاحية categories.manage)');
+      return;
+    }
+    if (nextOp === 'delete_categories' && !canManageCategories) {
+      setErrorMsg('غير مصرح لك بحذف التصنيفات (تفتقر لصلاحية categories.manage)');
       return;
     }
     if (nextOp === 'delete_items' && !canDeleteItems) {
@@ -691,7 +704,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
   const activeSummary = executeResult?.summary || previewResult?.summary;
   const normalizedConfirmCount = normalizeDigitChars(deleteConfirmCountInput);
   const isDeleteConfirmCountValid =
-    !isDeleteOperation ||
+    !isDeleteItemsOperation ||
     (normalizedConfirmCount.length > 0 &&
       /^\d+$/.test(normalizedConfirmCount) &&
       Number(normalizedConfirmCount) === (activeSummary?.willUpdateCount ?? -1));
@@ -736,6 +749,26 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
           },
           {
             label: executeResult ? 'أخطاء (صفوف مرفوضة/فاشلة)' : 'أخطاء (تُرفض)',
+            value: `${executeResult ? executeResult.errorCount : activeSummary.errorCount}`,
+            valueClassName:
+              (executeResult ? executeResult.errorCount : activeSummary.errorCount) > 0
+                ? 'ui-stock-out'
+                : 'text-[var(--text-primary)]',
+          },
+        ]
+      : isDeleteCategoriesOperation
+      ? [
+          {
+            label: 'إجمالي الصفوف',
+            value: `${activeSummary.totalRows}`,
+          },
+          {
+            label: executeResult ? 'التصنيفات التي تم حذفها' : 'التصنيفات القابلة للحذف',
+            value: `${executeResult ? executeResult.updatedCount : activeSummary.willUpdateCount}`,
+            valueClassName: 'ui-stock-out',
+          },
+          {
+            label: executeResult ? 'الصفوف المرفوضة (لم تُحذف)' : 'الصفوف المرفوضة (تُرفض)',
             value: `${executeResult ? executeResult.errorCount : activeSummary.errorCount}`,
             valueClassName:
               (executeResult ? executeResult.errorCount : activeSummary.errorCount) > 0
@@ -859,6 +892,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
               >
                 {canCreateItems && <option value="add_items">إضافة أصناف</option>}
                 {canManageCategories && <option value="add_categories">إضافة تصنيفات بالإكسيل</option>}
+                {canManageCategories && <option value="delete_categories">حذف التصنيفات بالإكسيل</option>}
                 <option value="print_name">تعديل اسم الطباعة</option>
                 <option value="primary_barcode">تعديل الباركود الرئيسي</option>
                 <option value="add_secondary_barcode">إضافة باركود فرعي</option>
@@ -970,6 +1004,8 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
               <span>
                 {isAddCategoriesOperation
                   ? '(النموذج فيه ورقة «التصنيفات» بصف العناوين فقط، وورقة «مثال وتعليمات» فيها مثال للرئيسي وحده ورئيسي تحته عدة فروع، والحد الأقصى 5000 صف.)'
+                  : isDeleteCategoriesOperation
+                  ? '(النموذج فيه ورقة «حذف التصنيفات» بعمود واحد فقط «اسم التصنيف»، وورقة «مثال وتعليمات» لشرح ضوابط الحذف، والحد الأقصى 5000 صف.)'
                   : isAddOperation || isImagesOnly
                   ? '(النموذج فيه ورقة بصف العناوين بس، وورقة «مثال وتعليمات» فيها الأمثلة والشرح، والحد الأقصى 5000 صف.)'
                   : '(الصف الأول عناوين عربية، والصف الثاني مثال توضيحي، والحد الأقصى 5000 صف.)'}
@@ -1154,6 +1190,8 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                     <span>
                       {isAddCategoriesOperation
                         ? `تنفيذ إضافة التصنيفات (${activeSummary.willUpdateCount})`
+                        : isDeleteCategoriesOperation
+                        ? `تنفيذ حذف التصنيفات (${activeSummary.willUpdateCount})`
                         : isAddOperation
                         ? `تنفيذ الإضافة (${activeSummary.willUpdateCount})`
                         : isDeleteOperation
@@ -1186,7 +1224,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
             </div>
           )}
 
-          {executeResult && isAddCategoriesOperation && executeResult.success && !executeResult.partialSuccess && executeResult.message && (
+          {executeResult && (isAddCategoriesOperation || isDeleteCategoriesOperation) && executeResult.success && !executeResult.partialSuccess && executeResult.message && (
             <div
               role="status"
               className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-xs font-bold ui-money-purchase flex items-center gap-2"
@@ -1270,7 +1308,11 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
               className="p-3.5 rounded-lg border border-red-500/40 bg-red-500/10 text-xs font-bold ui-stock-out flex items-center gap-2"
             >
               <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>الحذف نهائي ولا يمكن التراجع عنه — تأكد من مراجعة الأصناف الجاهزة للحذف أدناه قبل التأكيد.</span>
+              <span>
+                {isDeleteCategoriesOperation
+                  ? 'الحذف نهائي ولا يمكن التراجع عنه — راجع التصنيفات القابلة للحذف وأسباب رفض الصفوف الأخرى أدناه قبل التأكيد.'
+                  : 'الحذف نهائي ولا يمكن التراجع عنه — تأكد من مراجعة الأصناف الجاهزة للحذف أدناه قبل التأكيد.'}
+              </span>
             </div>
           )}
 
@@ -1368,6 +1410,15 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                   <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الصف</th>
                   <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التصنيف الرئيسي</th>
                   <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التصنيف الفرعي</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>الإجراء</th>
+                  <th className={`text-right ${COMPACT_TABLE_NUM_CLASS}`}>الحالة</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التفاصيل / سبب الرفض</th>
+                </tr>
+              ) : isDeleteCategoriesOperation ? (
+                <tr>
+                  <th className={`text-center ${COMPACT_TABLE_NUM_CLASS}`}>الصف</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>اسم التصنيف</th>
+                  <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>الموقع بالهرمية</th>
                   <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>الإجراء</th>
                   <th className={`text-right ${COMPACT_TABLE_NUM_CLASS}`}>الحالة</th>
                   <th className={`text-right ${COMPACT_TABLE_TEXT_CLASS}`}>التفاصيل / سبب الرفض</th>
@@ -1529,6 +1580,10 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                         <span className={`font-medium ${isDeleteOperation ? 'ui-stock-out' : 'ui-money-purchase'}`}>
                           {isAddOperation
                             ? `جاهز للإضافة${activeWarehouseName ? ` في ${activeWarehouseName}` : ''}`
+                            : isDeleteCategoriesOperation
+                            ? executeResult
+                              ? 'تم حذف التصنيف بنجاح'
+                              : 'التصنيف موجود وغير مرتبط بأصناف وقابل للحذف'
                             : isDeleteOperation
                             ? 'مطابق بالاسم — رصيده صفر وبلا معاملات'
                             : row.matchedBy === 'code_barcode'
@@ -1554,6 +1609,8 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
           title={
             isAddCategoriesOperation
               ? 'تأكيد إضافة التصنيفات بالإكسيل'
+              : isDeleteCategoriesOperation
+              ? 'تأكيد حذف التصنيفات بالإكسيل'
               : isAddOperation
               ? 'تأكيد إضافة الأصناف'
               : isDeleteOperation
@@ -1602,6 +1659,8 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                     <span>
                       {isAddCategoriesOperation
                         ? 'تأكيد وإضافة التصنيفات'
+                        : isDeleteCategoriesOperation
+                        ? `تأكيد حذف التصنيفات (${activeSummary.willUpdateCount})`
                         : isAddOperation
                         ? imagePlan
                           ? 'تأكيد الاستيراد'
@@ -1651,6 +1710,26 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                   سيتم إنشاء كل تصنيف رئيسي جديد مرة واحدة وربط التصنيفات الفرعية به عبر مسار إنشاء التصنيفات المعتمد، دون حذف أو إعادة تسمية أي تصنيفات حالية أو تغيير ربط الأصناف.
                 </p>
               </>
+            ) : isDeleteCategoriesOperation ? (
+              <>
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">إجمالي الصفوف في الملف:</span>
+                  <span className="font-bold text-[var(--text-primary)]">{activeSummary.totalRows} صف</span>
+                </div>
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">عدد التصنيفات التي ستُحذف:</span>
+                  <span className="font-bold ui-stock-out">{activeSummary.willUpdateCount} تصنيف</span>
+                </div>
+                <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-secondary)] font-semibold">عدد الصفوف المرفوضة (لن تُحذف):</span>
+                  <span className={`font-bold ${activeSummary.errorCount > 0 ? 'ui-stock-out' : 'text-[var(--text-primary)]'}`}>
+                    {activeSummary.errorCount} صف
+                  </span>
+                </div>
+                <div className="p-3 mt-2 rounded-lg border border-red-500/40 bg-red-500/10 ui-stock-out font-bold leading-relaxed">
+                  تأكيد الحذف: سيتم حذف ({activeSummary.willUpdateCount}) تصنيف نهائياً من النظام (مع حذف التصنيفات الفرعية أولاً ثم الرئيسية إذا كانت مدرجة معاً)، وتجاهل ({activeSummary.errorCount}) صف مرفوض، مع إعادة التحقق في السيرفر لحظة التنفيذ من عدم ارتباط أي تصنيف بأصناف أو فروع غير محذوفة.
+                </div>
+              </>
             ) : (
               <>
                 {activeWarehouseName && (
@@ -1671,6 +1750,25 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                     {activeSummary.willUpdateCount} صنف
                   </span>
                 </div>
+                {isAddOperation &&
+                  Array.isArray(previewResult?.newCategories || activeSummary.newCategories) &&
+                  (previewResult?.newCategories || activeSummary.newCategories || []).length > 0 && (
+                    <div className="py-1.5 border-b border-[var(--border-subtle)] space-y-1">
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-[var(--text-secondary)] font-semibold">
+                          تصنيفات رئيسية جديدة ستُنشأ عند التأكيد:
+                        </span>
+                        <span className="font-bold ui-money-purchase">
+                          {(previewResult?.newCategories || activeSummary.newCategories || []).length} تصنيف
+                        </span>
+                      </div>
+                      <div className="text-[11px] font-bold ui-money-purchase leading-relaxed">
+                        {(previewResult?.newCategories || activeSummary.newCategories || [])
+                          .map((c) => `${c.name} (${c.itemsCount} ${c.itemsCount === 1 ? 'صنف' : 'أصناف'})`)
+                          .join('، ')}
+                      </div>
+                    </div>
+                  )}
                 {warningCount > 0 && (
                   <div className="flex items-center justify-between gap-4 py-1 border-b border-[var(--border-subtle)]">
                     <span className="ui-stock-low font-semibold">أصناف بتنبيهات:</span>
@@ -1697,7 +1795,7 @@ export const BulkEditExcelPage: React.FC<BulkEditExcelPageProps> = ({
                     </span>
                   </div>
                 )}
-                {isDeleteOperation ? (
+                {isDeleteItemsOperation ? (
                   <div className="space-y-3 pt-2">
                     <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/10 ui-stock-out font-bold leading-relaxed">
                       الحذف نهائي ولا يمكن التراجع عنه. سيتم مسح {activeSummary.willUpdateCount} صنف مع باركوداتها وأرصدة مخازنها وتكاليفها وسجلاتها من النظام بالكامل.

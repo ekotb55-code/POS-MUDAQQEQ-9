@@ -2673,6 +2673,8 @@ export async function createServerApp(options?: { attachVite?: boolean; persiste
           ? 'bulk-add-items-template.xlsx'
           : operationType === 'add_categories'
           ? 'bulk-add-categories-template.xlsx'
+          : operationType === 'delete_categories'
+          ? 'bulk-delete-categories-template.xlsx'
           : operationType === 'delete_items'
           ? 'bulk-delete-items-template.xlsx'
           : operationType === 'purchase_price'

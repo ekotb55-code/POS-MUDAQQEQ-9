@@ -1339,6 +1339,7 @@ export type BulkEditOperationType =
   | 'image_url'
   | 'add_items'
   | 'add_categories'
+  | 'delete_categories'
   | 'delete_items';
 
 export type BulkEditPriceOperationType = BulkEditOperationType;

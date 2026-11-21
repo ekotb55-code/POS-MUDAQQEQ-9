@@ -3954,7 +3954,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 withTopDivider={canManageSalesRules || canManageDisplay || canManagePrint || canManageCompany}
               />
               <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                حدد التصنيفات التي تظهر كأزرار في شاشة نقطة البيع فقط. لا يظهر زر «كل الأصناف»، وعند عدم تحديد أي تصنيف ستظهر حالة فارغة في نقطة البيع دون الرجوع لعرض الكل. (لا يؤثر ذلك على البحث أو مسح الباركود.)
+                حدد التصنيفات الرئيسية والتصنيفات الفرعية التابعة لها التي تظهر كأزرار في شاشة نقطة البيع فقط. لا يظهر زر «الكل» في صف التصنيفات الرئيسية أو الفرعية، ولا تُعرض جميع الفروع تلقائياً كبديل عند عدم اختيارها. (لا يؤثر ذلك على البحث أو مسح الباركود.)
               </p>
               <PosVisibleCategoriesPicker
                 categories={categories}
