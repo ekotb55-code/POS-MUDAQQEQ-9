@@ -3949,6 +3949,62 @@ function isCategoryActiveForImport(cat: ProductCategory): boolean {
   return st !== 'موقوف' && st !== 'inactive';
 }
 
+function resolveAddItemImportCategory(
+  rawCategoryInput: unknown,
+  categories: ProductCategory[]
+):
+  | {
+      ok: true;
+      categoryId?: string;
+      categoryName?: string;
+    }
+  | {
+      ok: false;
+      error: string;
+    } {
+  const rawCell = String(rawCategoryInput ?? '').trim();
+  if (!rawCell) {
+    return { ok: true, categoryId: undefined, categoryName: undefined };
+  }
+
+  const activeCategories = categories.filter(isCategoryActiveForImport);
+  const activeById = new Map(activeCategories.map(c => [c.id, c]));
+  const eligibleCategories = activeCategories.filter(
+    c => !c.parentCategoryId || activeById.has(c.parentCategoryId)
+  );
+
+  const exactMatches = eligibleCategories.filter(
+    c => String(c.name ?? '').trim() === rawCell
+  );
+  const matchedCategories =
+    exactMatches.length > 0
+      ? exactMatches
+      : eligibleCategories.filter(
+          c => String(c.name ?? '').trim().toLowerCase() === rawCell.toLowerCase()
+        );
+
+  if (matchedCategories.length === 0) {
+    return {
+      ok: false,
+      error: `التصنيف غير موجود: ${rawCell}`
+    };
+  }
+
+  if (matchedCategories.length > 1) {
+    return {
+      ok: false,
+      error: `التصنيف غير محدد: ${rawCell}`
+    };
+  }
+
+  const matched = matchedCategories[0];
+  return {
+    ok: true,
+    categoryId: matched.id,
+    categoryName: matched.name
+  };
+}
+
 function resolveSingleColumnImportCategory(params: {
   rawCategoryInput: string;
   rawLegacySubCategoryInput?: string;
@@ -4692,7 +4748,6 @@ function extractRowsFromBulkEditXlsxBuffer(
       mapOptional('salePrice', ['سعر البيع', 'السعر']);
       mapOptional('purchasePrice', ['سعر الشراء']);
       mapOptional('notes', ['وصف الصنف', 'الوصف', 'ملاحظات', 'الملاحظات']);
-      mapOptional('subCategory', ['التصنيف الفرعي']);
       mapOptional('unit', ['الوحدة', 'وحدة القياس']);
       mapOptional('reorderLimit', ['الحد الأدنى للكمية', 'حد إعادة الطلب', 'الحد الأدنى للمخزون', 'الحد الأدنى']);
       mapOptional('supplier', ['المورد', 'اسم المورد', 'المورد الافتراضي']);
@@ -6279,21 +6334,19 @@ function evaluateBulkEditRows(
         }
 
         // 7) التصنيف من العمود الواحد (اختياري؛ إذا كان فارغاً يُحفظ الصنف بدون تصنيف)
-        const rootName = String(values.rootCategory ?? '').trim().replace(/\s+/g, ' ');
-        const subName = String(values.subCategory ?? '').trim().replace(/\s+/g, ' ');
+        // تُعامل قيمة الخلية كاسم تصنيف كامل حرفي (شاملاً التصنيفات الرئيسية والفرعية وأي رموز مثل / أو > أو الأقواس) دون تقسيم
+        const rawCategoryCell = String(values.rootCategory ?? '').trim();
         let categoryIdVal: string | undefined;
         let categoryNameVal: string | undefined;
-        let isNewRootCategoryVal = false;
-        let newRootCategoryNameVal: string | undefined;
-        let newRootNormNameVal: string | undefined;
+        const isNewRootCategoryVal = false;
+        const newRootCategoryNameVal: string | undefined = undefined;
+        const newRootNormNameVal: string | undefined = undefined;
 
-        if (rootName || subName) {
-          const catRes = resolveSingleColumnImportCategory({
-            rawCategoryInput: rootName || subName,
-            rawLegacySubCategoryInput: rootName ? subName : '',
-            categories: memoryCategories,
-            canManageCategories
-          });
+        if (rawCategoryCell) {
+          const catRes = resolveAddItemImportCategory(
+            rawCategoryCell,
+            categoriesOverride || memoryCategories
+          );
 
           if (catRes.ok === false) {
             reasons.push(
@@ -6303,17 +6356,7 @@ function evaluateBulkEditRows(
             );
           } else {
             categoryIdVal = catRes.categoryId;
-            isNewRootCategoryVal = catRes.isNewRootCategory;
-            if (catRes.isNewRootCategory && catRes.newRootNormName && catRes.newRootCategoryName) {
-              const firstWrittenName =
-                pendingNewRootNamesByNorm.get(catRes.newRootNormName) || catRes.newRootCategoryName;
-              pendingNewRootNamesByNorm.set(catRes.newRootNormName, firstWrittenName);
-              newRootCategoryNameVal = firstWrittenName;
-              newRootNormNameVal = catRes.newRootNormName;
-              categoryNameVal = `${firstWrittenName} (تصنيف جديد)`;
-            } else {
-              categoryNameVal = catRes.categoryName;
-            }
+            categoryNameVal = catRes.categoryName;
           }
         }
 
@@ -6514,9 +6557,6 @@ function evaluateBulkEditRows(
       rawValues['اسم الطباعة'] = values.printName ?? '';
       rawValues['الكمية'] = values.stockQuantity ?? '';
       rawValues['التصنيف'] = values.rootCategory ?? '';
-      if (values.subCategory !== undefined && !isCellEmpty(values.subCategory)) {
-        rawValues['التصنيف الفرعي'] = values.subCategory ?? '';
-      }
       rawValues['الباركود الرئيسي'] = values.barcode ?? '';
       rawValues['سعر البيع'] = values.salePrice ?? '';
       rawValues['سعر الشراء'] = values.purchasePrice ?? '';
@@ -6850,7 +6890,7 @@ export async function generateBulkPriceEditTemplateBuffer(
       ['الأعمدة الاختيارية — يمكن ترك خلاياها فارغة أو حذف العمود بالكامل من الملف (أي خانة فارغة تأخذ صفراً للأرقام وفراغاً للنصوص):'],
       ['1. اسم الطباعة: الاسم المختصر النظيف الذي يظهر للعميل في الفاتورة المطبوعة (حتى 120 حرفاً، والافتراضي عند الترك: نص فارغ).'],
       ['2. الكمية: الرصيد الافتتاحي بالمخزن المحدد (رقم 0 أو أكثر، والافتراضي عند الترك: 0).'],
-      ['3. التصنيف: اسم التصنيف الرئيسي أو الفرعي أو تصنيف جديد (الافتراضي عند الترك: صنف بدون تصنيف).'],
+      ['3. التصنيف: اسم التصنيف الكامل المطابق لتصنيف موجود (رئيسي أو فرعي) كما هو، شاملاً أي رموز مثل / أو > أو الأقواس (الافتراضي عند الترك: صنف بدون تصنيف).'],
       ['4. سعر البيع: سعر بيع الصنف للجمهور (رقم 0 أو أكثر، والافتراضي عند الترك: 0 مع تنبيه غير مانع لمراجعة الأسعار).'],
       ['5. سعر الشراء: تكلفة شراء الصنف (رقم 0 أو أكثر، والافتراضي عند الترك: 0).'],
       ['6. وصف الصنف: ملاحظات ووصف تفصيلي للصنف (الافتراضي عند الترك: نص فارغ).'],
@@ -6867,11 +6907,9 @@ export async function generateBulkPriceEditTemplateBuffer(
       [],
       ['شرح تحديد عمود التصنيف الواحد:'],
       ['• ترك خانة التصنيف فارغة: يُضاف الصنف بدون تصنيف.'],
-      ['• كتابة «الرئيسي / الفرعي» (مثل: إلكترونيات / كابلات): يربط الصنف بالتصنيف الفرعي تحت الرئيسي المحدد.'],
-      ['• كتابة اسم تصنيف رئيسي موجود: يربط الصنف بالتصنيف الرئيسي مباشرة.'],
-      ['• كتابة اسم تصنيف فرعي موجود تحت رئيسي واحد فقط: يتعرف النظام على الأب ويربطه بالفرعي تلقائياً.'],
-      ['• إذا كان الاسم الفرعي متكرراً تحت أكثر من تصنيف رئيسي: يُرفض السطر ويُطلب كتابته بصيغة «الرئيسي / الفرعي».'],
-      ['• كتابة اسم تصنيف غير موجود: يُنشأ تصنيف رئيسي جديد تلقائياً (لمن يملك صلاحية إدارة التصنيفات) مرة واحدة لكل صفوف نفس الاسم.']
+      ['• تُعامل قيمة خلية «التصنيف» كاسم كامل حرفي وتُطابق مع أسماء التصنيفات الموجودة (الرئيسية والفرعية) دون تقسيم عند / أو > أو أي علامة ترقيم.'],
+      ['• إذا وُجد أكثر من تصنيف بنفس الاسم تحت رؤوس مختلفة: يُرفض الصف برسالة «التصنيف غير محدد».'],
+      ['• إذا لم يوجد تطابق كامل مع أي تصنيف حالي: يُرفض الصف برسالة «التصنيف غير موجود» مع قيمة الخلية كما هي.']
     ];
     const guideWs = XLSX.utils.aoa_to_sheet(guideAoa);
     for (const rIdx of [1, 2]) {
@@ -7104,7 +7142,11 @@ export async function previewBulkPriceEditExcel(
   session?: BulkEditSessionInfo
 ) {
   const config = getSystemConfig();
-  if (isSheetsDataMode(config) && payload?.operationType !== 'add_categories') {
+  if (
+    isSheetsDataMode(config) &&
+    payload?.operationType !== 'add_categories' &&
+    payload?.operationType !== 'add_items'
+  ) {
     const prepared = await prepareBulkEditInputRows(payload, session);
     if (prepared.success === false) {
       return prepared;
@@ -7193,7 +7235,11 @@ export async function executeBulkPriceEditExcel(
   session?: BulkEditSessionInfo
 ) {
   const config = getSystemConfig();
-  if (isSheetsDataMode(config) && payload?.operationType !== 'add_categories') {
+  if (
+    isSheetsDataMode(config) &&
+    payload?.operationType !== 'add_categories' &&
+    payload?.operationType !== 'add_items'
+  ) {
     const prepared = await prepareBulkEditInputRows(payload, session);
     if (prepared.success === false) {
       return {
@@ -7478,6 +7524,16 @@ export async function executeBulkPriceEditExcel(
 
         let resolvedCategoryId = d.categoryId;
         let resolvedCategoryName = d.categoryName;
+
+        if (resolvedCategoryId) {
+          const verifiedCat = memoryCategories.find(
+            c => c.id === resolvedCategoryId && isCategoryActiveForImport(c)
+          );
+          if (verifiedCat) {
+            resolvedCategoryId = verifiedCat.id;
+            resolvedCategoryName = verifiedCat.name;
+          }
+        }
 
         if (d.isNewRootCategory && d.newRootNormName && d.newRootCategoryName) {
           let createdCat =
@@ -10589,32 +10645,19 @@ export async function importItemsBatch(
       const rawMainCat = String(
         raw.category ?? raw.rootCategory ?? raw.categoryName ?? raw['التصنيف'] ?? ''
       ).trim();
-      const rawSubCat = String(raw.subCategory ?? raw['التصنيف الفرعي'] ?? '').trim();
 
       let resolvedCategoryId: string | undefined = raw.categoryId ? String(raw.categoryId).trim() : undefined;
       let resolvedCategoryName: string | undefined = raw.categoryName ? String(raw.categoryName).trim() : undefined;
       let pendingNewCatInfo: { normName: string; exactName: string } | null = null;
 
-      if (!resolvedCategoryId && (rawMainCat || rawSubCat)) {
-        const catRes = resolveSingleColumnImportCategory({
-          rawCategoryInput: rawMainCat || rawSubCat,
-          rawLegacySubCategoryInput: rawMainCat ? rawSubCat : '',
-          categories: memoryCategories,
-          canManageCategories
-        });
+      if (!resolvedCategoryId && rawMainCat) {
+        const catRes = resolveAddItemImportCategory(rawMainCat, memoryCategories);
         if (catRes.ok === false) {
           errors.push(`السطر ${rowNum} (${name}): ${catRes.error}`);
           continue;
         }
-        if (catRes.isNewRootCategory && catRes.newRootNormName && catRes.newRootCategoryName) {
-          pendingNewCatInfo = {
-            normName: catRes.newRootNormName,
-            exactName: catRes.newRootCategoryName
-          };
-        } else {
-          resolvedCategoryId = catRes.categoryId;
-          resolvedCategoryName = catRes.categoryName;
-        }
+        resolvedCategoryId = catRes.categoryId;
+        resolvedCategoryName = catRes.categoryName;
       }
 
       const rawPurchase = raw.purchasePrice ?? raw['سعر الشراء'];
